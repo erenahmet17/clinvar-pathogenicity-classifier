@@ -1,0 +1,19 @@
+# Büyük ham veri dosyası
+variant_summary.txt.gz
+
+# Notebook checkpoint dosyaları (bunlar yeniden oluşturulabilir, repo'yu şişirmesin)
+annot_df_checkpoint.csv
+final_df_checkpoint.csv
+vus_annot_checkpoint.csv
+vus_final_checkpoint.csv
+
+# Jupyter'ın otomatik checkpoint klasörü
+.ipynb_checkpoints/
+
+# Python / PyCharm ortam dosyaları
+.venv/
+.idea/
+__pycache__/
+
+!clinvar_app/vus_final_checkpoint.csv
+!clinvar_app/xgb_model.pkl
