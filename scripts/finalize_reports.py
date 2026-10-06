@@ -52,6 +52,8 @@ def main():
         "",
         "Bu, zaman bazlı ClinVar etiket kontrolüdür. Genetik hastalık riskini, penetransı veya bağımsız fonksiyonel doğruluğu kanıtlamaz. ClinVar etiketleri hesaplamalı kanıtlardan etkilenmiş olabilir.",
         "",
+        f"**Reclassified VUS örneklemi yalnızca {external['groups']['reclassified_vus']['n']} varyanttır. AUC={fmt(external['groups']['reclassified_vus'].get('roc_auc'))}, Brier={fmt(external['groups']['reclassified_vus'].get('brier'))}. Bu küçük gruptaki daha zayıf sonuç geniş VUS popülasyonu için güçlü doğrulama sayılmaz. Yeni etiketli grup, önceki 2+ yıldızlı eğitim kohortuna yeni uygun hale gelen kimliklerdir; her kimliğin ilk kez ClinVar'da etiketlendiği iddiası değildir.**",
+        "",
         "## Model geliştirme",
         "",
         f"Fit satırları: **{manifest['n_fit']:,}**. Kalibrasyon satırları: **{manifest['n_calibration']:,}**. CV fold: **5**. Arama iterasyonu: **12**.",
@@ -102,6 +104,29 @@ def main():
     ]
     docs = ROOT / "docs"
     docs.mkdir(exist_ok=True)
+    lines += [
+        "",
+        "## Kohort seçimi ve nadir AF alt grupları",
+        "",
+        "| Kaynak | Benign önce/sonra | Patojenik önce/sonra | VUS önce/sonra |",
+        "|---|---:|---:|---:|",
+    ]
+    for name, source in [("Temmuz", manifest["provenance"]), ("Ekim", manifest["vus_source"])]:
+        keep = source["retention"]
+        lines.append(
+            f"| {name} | {keep['class_retention']['0']['before']:,} / {keep['class_retention']['0']['after']:,} | {keep['class_retention']['1']['before']:,} / {keep['class_retention']['1']['after']:,} | {keep['vus_before']:,} / {keep['vus_after']:,} |"
+        )
+    lines += ["", "| Test / alt grup | N | B/LB | P/LP | ROC-AUC |", "|---|---:|---:|---:|---:|"]
+    for name, values in metrics["test"].items():
+        for group, value in values["subgroups"].items():
+            if isinstance(value, dict):
+                lines.append(
+                    f"| {name} / {group} | {value['n']:,} | {value['n_benign']:,} | {value['n_pathogenic']:,} | {fmt(value['roc_auc'])} |"
+                )
+    lines += [
+        "",
+        "Bu alt gruplar önceden tanımlanan betimsel ölçümlerdir. az sayıda benign/patojenik kayıt bulunan gruplar dikkatle okunmalıdır. Name desenleri yalnızca consequence proxy'sidir.",
+    ]
     (docs / "RUN_RESULTS.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     fixes = [
         (
@@ -256,6 +281,8 @@ def main():
         "",
         f"Fit={manifest['n_fit']:,}; calibration={manifest['n_calibration']:,}; VUS skorlanan={manifest['vus_counts']['n_scored']:,}.",
         "",
+        f"Varyant testi ROC-AUC={fmt(metrics['test']['variant_test']['calibrated_score']['roc_auc'])}; gen testi={fmt(metrics['test']['gene_test']['calibrated_score']['roc_auc'])}; Ekim'deki yeni uygun etiketli varyantlar={fmt(external['groups']['new_labeled_variants'].get('roc_auc'))}. Reclassified VUS n={external['groups']['reclassified_vus']['n']}, ROC-AUC={fmt(external['groups']['reclassified_vus'].get('roc_auc'))}. Son grup çok küçük ve daha zayıftır; klinik VUS doğrulaması olarak sunulmaz.",
+        "",
         "## Yazılım ve uygulama",
         "",
         "Notebook, ortak paket fonksiyonlarını çağıran inceleme katmanına dönüştürüldü. CLI veri hazırlama, devam ettirilebilir anotasyon, eğitim, dış değerlendirme ve VUS skorlama adımlarını açık komutlara ayırır. UI aynı feature sözleşmesini kullanır; manuel unknown AF korunur; canlı source metadata değişmişse skor reddedilir. VUS ve performans sayfaları yalnızca seçildiğinde çalışır. Model startup native hash/feature-order doğrulaması yapar; yardımcı veri eksikliği manuel inference'ı bozmaz.",
@@ -277,6 +304,7 @@ def main():
         "- Kesin consequence/transcript stratifikasyonu için sürümlü VEP/MANE anotasyonu gerekir. Mevcut stop/splice/missense Name desenleri proxy olarak etiketlidir.",
         "- ClinVar zaman testi bağımsız fonksiyonel veya hasta/segregasyon verisi değildir. Kaynak predictorların eğitim/tuning veri örtüşmesi tamamen dışlanmış sayılmaz.",
         "- Kalibrasyon, seçilmiş araştırma kohortundaki skor davranışını ayarlar; tüm VUS/gen/ancestry gruplarında mutlak olasılık garantisi değildir. Satır bootstrap gen bağımlılığını kapsamaz.",
+        "- Fit kohortunda AF bilinmeme oranı B/LB için yaklaşık %3,85, P/LP için %75,43'tür. Eksik-sıfır ayrımı düzeltilmiş olsa da kaynak bulunabilirliği güçlü bir sınıf sinyali taşır; teknik ve biyolojik sinyal bütünüyle ayrıştırılmış sayılmaz.",
         "- Eski eğitimin eksik ham snapshot/kimlikleri geçmişe dönük uydurulmadı. Yeni koşuda bunlar saklanıyor; eski ve yeni AUC farkı aynı veri üzerinde kontrollü iyileşme olarak sunulmaz.",
         "",
         "## Tekrar çalıştırma ve teslim",

@@ -1,0 +1,29 @@
+{
+  "partition": "fit only",
+  "n": 53731,
+  "unknown_af_fraction_by_label": {
+    "B/LB": 0.03854792134573956,
+    "P/LP": 0.7543397881807358
+  },
+  "correlation_pairwise_observed": {
+    "cadd_phred": {
+      "cadd_phred": 1.0,
+      "phylop_100way": 0.5635866688431695,
+      "gnomad_af": -0.22865890127930039
+    },
+    "phylop_100way": {
+      "cadd_phred": 0.5635866688431695,
+      "phylop_100way": 1.0,
+      "gnomad_af": -0.15351635729547608
+    },
+    "gnomad_af": {
+      "cadd_phred": -0.22865890127930039,
+      "phylop_100way": -0.15351635729547608,
+      "gnomad_af": 1.0
+    }
+  },
+  "class_counts": {
+    "1.0": 31914,
+    "0.0": 21817
+  }
+}
