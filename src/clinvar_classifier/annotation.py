@@ -92,6 +92,14 @@ class AnnotationClient:
             FileLock(str(self.cache_dir / ".writer.lock"), timeout=0) if self.cache_dir else None
         )
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        close = getattr(self.session, "close", None)
+        if close:
+            close()
+
     def _json(self, method: str, url: str, **kwargs):
         try:
             response = self.session.request(method, url, timeout=self.timeout, **kwargs)

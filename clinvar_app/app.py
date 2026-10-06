@@ -162,8 +162,7 @@ elif page == "Variant search":
     if submitted:
         try:
             hgvs = predictor.check_variant_scope(hgvs)
-            with st.spinner("Reading MyVariant hg38 annotations…"):
-                client = AnnotationClient()
+            with st.spinner("Reading MyVariant hg38 annotations…"), AnnotationClient() as client:
                 current = client.pin_metadata()
                 expected = manifest.get("provenance", {}).get("annotation", {}).get("namespace")
                 if expected and current["namespace"] != expected:
