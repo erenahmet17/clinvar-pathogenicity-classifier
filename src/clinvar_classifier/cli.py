@@ -161,14 +161,22 @@ def main(argv=None):
         }
         frames = []
         for name, frame in [("new_labeled_variants", new), ("reclassified_vus", reclassified)]:
+            outside = frame.hgvs_id.isin(predictor.manifest.get("known_scope_exclusions", {}))
+            excluded_count = int(outside.sum())
+            frame = frame.loc[~outside]
             if frame.empty:
-                report["groups"][name] = {"n": 0, "roc_auc": None}
+                report["groups"][name] = {
+                    "n": 0,
+                    "roc_auc": None,
+                    "known_out_of_scope_not_scored": excluded_count,
+                }
                 continue
             frame = frame.copy().reset_index(drop=True)
             predictions = predictor.predict(frame)
             frame["model_score"] = predictions.model_score
             frame["evaluation_group"] = name
             report["groups"][name] = {
+                "known_out_of_scope_not_scored": excluded_count,
                 **metrics(frame.label, frame.model_score, bootstrap=500),
                 "subgroups": subgroup_report(frame, frame.model_score),
             }
