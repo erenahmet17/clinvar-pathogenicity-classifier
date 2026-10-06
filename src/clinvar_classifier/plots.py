@@ -25,7 +25,7 @@ def development_eda(frame: pd.DataFrame, output: Path):
             if field == "gnomad_af":
                 values = np.log10(values + 1e-9)
             ax.hist(values, bins=40, density=True, alpha=0.55, label=name, color=color)
-        ax.set_title(field + (" (log10 + 1e-9)" if field == "gnomad_af" else ""))
+        ax.set_title("log10(gnomAD AF + 1e-9)" if field == "gnomad_af" else field)
         ax.set_ylabel("Density among available observations")
         ax.legend()
     missing = [
