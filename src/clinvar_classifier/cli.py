@@ -9,7 +9,7 @@ import pandas as pd
 
 from .annotation import AnnotationClient
 from .data import merge_annotations, read_cohort
-from .evaluate import external_cohort, metrics, subgroup_report
+from .evaluate import external_cohort, metrics, subgroup_report, validate_temporal_sources
 from .inference import Predictor
 from .io import sha256, write_json, write_parquet
 from .train import train_run
@@ -136,10 +136,24 @@ def main(argv=None):
     else:
         earlier, later = pd.read_parquet(args.earlier_dataset), pd.read_parquet(args.later_dataset)
         predictor = Predictor(args.bundle)
+        early_provenance = json.loads(
+            args.earlier_dataset.with_name("dataset_manifest.json").read_text(encoding="utf-8")
+        )
+        late_provenance = json.loads(
+            args.later_dataset.with_name("dataset_manifest.json").read_text(encoding="utf-8")
+        )
+        months = validate_temporal_sources(
+            early_provenance,
+            late_provenance,
+            predictor.manifest.get("provenance", {}),
+            sha256(args.earlier_dataset),
+            sha256(args.later_dataset),
+        )
         new, reclassified = external_cohort(
             earlier[earlier.label.notna()], later, earlier[earlier.is_vus]
         )
         report = {
+            "snapshot_months": months,
             "earlier_dataset_sha256": sha256(args.earlier_dataset),
             "later_dataset_sha256": sha256(args.later_dataset),
             "interpretation": "Temporal label evaluation with frozen annotation sources; not independent functional validation. Label reclassification may depend on computational evidence.",

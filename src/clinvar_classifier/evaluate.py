@@ -1,5 +1,7 @@
 """Descriptive metrics, calibration, predeclared subgroups and external identity checks."""
 
+import re
+
 import numpy as np
 import pandas as pd
 from sklearn.metrics import (
@@ -140,3 +142,29 @@ def external_cohort(training: pd.DataFrame, later: pd.DataFrame, earlier_vus: pd
     if set(new.hgvs_id) & set(training.hgvs_id):
         raise ValidationError("External variants overlap the training source cohort.")
     return new, reclassified
+
+
+def validate_temporal_sources(earlier, later, training_provenance, early_hash, late_hash):
+    if early_hash != earlier.get("dataset_sha256") or late_hash != later.get("dataset_sha256"):
+        raise ValidationError("External dataset bytes differ from their manifests.")
+    if early_hash != training_provenance.get("dataset_sha256"):
+        raise ValidationError("Earlier cohort is not the source dataset used to train this model.")
+    namespaces = [value.get("annotation", {}).get("namespace") for value in [earlier, later]]
+    if not namespaces[0] or namespaces[0] != namespaces[1]:
+        raise ValidationError(
+            "Temporal label evaluation requires the same frozen annotation source namespace."
+        )
+    months = []
+    for value in [earlier, later]:
+        match = re.search(
+            r"(20[0-9]{2}-(?:0[1-9]|1[0-2]))\.txt\.gz$",
+            value.get("cohort", {}).get("snapshot_filename", ""),
+        )
+        if not match:
+            raise ValidationError("A dated archive snapshot is required for temporal evaluation.")
+        months.append(match[1])
+    if months[0] >= months[1]:
+        raise ValidationError(
+            "The external label snapshot must be later than the training snapshot."
+        )
+    return months

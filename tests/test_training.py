@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 import xgboost as xgb
 
-from clinvar_classifier.evaluate import external_cohort, metrics
+from clinvar_classifier.evaluate import external_cohort, metrics, validate_temporal_sources
 from clinvar_classifier.features import FEATURES_V2, make_features
 from clinvar_classifier.inference import Predictor
 from clinvar_classifier.io import sha256, write_json, write_parquet
@@ -101,6 +101,27 @@ def test_metrics_single_class_and_score_bounds():
     assert result["sensitivity"] is None
     with pytest.raises(ValidationError):
         metrics([0, 1], [0.1, np.inf])
+
+
+def test_temporal_source_namespace_hash_and_order():
+    early = {
+        "dataset_sha256": "early",
+        "annotation": {"namespace": "fixed"},
+        "cohort": {"snapshot_filename": "variant_summary_2026-07.txt.gz"},
+    }
+    late = {
+        "dataset_sha256": "late",
+        "annotation": {"namespace": "fixed"},
+        "cohort": {"snapshot_filename": "variant_summary_2026-10.txt.gz"},
+    }
+    assert validate_temporal_sources(early, late, early, "early", "late") == ["2026-07", "2026-10"]
+    with pytest.raises(ValidationError):
+        validate_temporal_sources(late, early, late, "late", "early")
+    with pytest.raises(ValidationError):
+        validate_temporal_sources(early, late, early, "changed", "late")
+    late["annotation"]["namespace"] = "changed"
+    with pytest.raises(ValidationError):
+        validate_temporal_sources(early, late, early, "early", "late")
 
 
 def test_training_writes_disjoint_identity_manifest(tmp_path, small_dataset):
