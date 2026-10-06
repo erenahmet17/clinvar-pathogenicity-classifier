@@ -1,275 +1,276 @@
-import streamlit as st
-import joblib
-import numpy as np
-import pandas as pd
-import shap
-import matplotlib.pyplot as plt
-import requests
-from sklearn.metrics import confusion_matrix, roc_curve, auc
-import plotly.graph_objects as go
-import pickle
+"""Thin Streamlit presentation; shared data contracts live in clinvar_classifier."""
+# ruff: noqa: E402
 
-st.set_page_config(page_title="ClinVar Variant Classifier", layout="wide")
-st.title("🧬 ClinVar Variant Pathogenicity Classifier")
-with st.sidebar:
-    st.header("📌 About This Project")
-    st.write("""
-    This app uses an XGBoost model trained on ClinVar variant data
-    to predict the pathogenicity of genetic variants.
-    """)
-    st.metric("Test ROC-AUC", "0.996")
-    st.metric("Training Data", "79,586 variants")
-    st.divider()
-    st.write("**Features Used:**")
-    st.write("- CADD Phred Score")
-    st.write("- phyloP Conservation Score")
-    st.write("- gnomAD Population Frequency")
-    st.divider()
-    st.write("[GitHub Repo](https://github.com/erenahmet17)")
-st.write("Predicts the pathogenicity (harmfulness) of genetic variants using an XGBoost model "
-         "based on CADD, phyloP, and gnomAD frequency data.")
+import json
+import os
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+import pandas as pd
+import streamlit as st
+
+from clinvar_classifier.annotation import AnnotationClient, AnnotationError
+from clinvar_classifier.inference import Predictor
+from clinvar_classifier.io import sha256
+from clinvar_classifier.schemas import ValidationError
+
+BUNDLE = Path(os.environ.get("CLINVAR_BUNDLE_DIR", str(ROOT / "artifacts" / "research-v2")))
+st.set_page_config(page_title="ClinVar SNV Research", layout="wide")
+st.title("🧬 ClinVar SNV Research & Prioritization")
+st.info(
+    "Research prioritization scores. These scores do not reclassify ClinVar VUS, estimate penetrance, or provide patient disease risk."
+)
 
 
 @st.cache_resource
-def load_model():
-    return joblib.load("xgb_model.pkl")
+def load_predictor(path, manifest_mtime):
+    return Predictor(Path(path))
 
 
-model = load_model()
-
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Manual Feature Input", "🔍 Search Variant (HGVS ID)",
-                                  "🧬 VUS Explorer", "📈 Model Performance"])
-
-with tab1:
-    st.header("Manual Feature Input")
-    st.write("Enter CADD, phyloP, and gnomAD frequency values manually to get a prediction.")
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        cadd_input = st.number_input("CADD Phred Score", min_value=0.0, max_value=99.0, value=25.0, step=0.1,
-                                     help="Higher value = predicted to be more harmful")
-    with col2:
-        phylop_input = st.number_input("phyloP (100way vertebrate)", min_value=-20.0, max_value=15.0, value=2.0,
-                                       step=0.1,
-                                       help="Higher value = more evolutionarily conserved region")
-    with col3:
-        gnomad_input = st.number_input("gnomAD Population Frequency", min_value=0.0, max_value=1.0, value=0.0,
-                                       step=0.0001, format="%.6f",
-                                       help="0 = variant never observed in the population")
-
-    if st.button("Predict", key="manual_predict"):
-        gnomad_log = np.log10(gnomad_input + 1e-9)
-        X_input = pd.DataFrame([[cadd_input, phylop_input, gnomad_log]],
-                               columns=["cadd_phred", "phylop_100way", "gnomad_af_log"])
-
-        proba = model.predict_proba(X_input)[0, 1]
-        label = "Pathogenic" if proba > 0.5 else "Benign"
-
-        st.subheader("Result")
-        if proba > 0.5:
-            st.error(f"⚠️ Prediction: **{label}** (Pathogenic probability: {proba:.1%})")
-        else:
-            st.success(f"✅ Prediction: **{label}** (Pathogenic probability: {proba:.1%})")
-
-
-        def render_gauge(proba):
-            color = "#ff4b4b" if proba > 0.5 else "#00cc66"
-            st.markdown(f"""
-            <div style="background-color:#333; border-radius:10px; height:30px; width:100%;">
-                <div style="background-color:{color}; width:{proba * 100}%; height:100%; 
-                            border-radius:10px; text-align:center; color:white; line-height:30px;">
-                    {proba:.1%}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-
-        render_gauge(proba)
-
-        st.subheader("Why this prediction (SHAP)")
-        explainer = shap.TreeExplainer(model)
-        shap_values = explainer.shap_values(X_input)
-
-        fig, ax = plt.subplots(figsize=(8, 3))
-        shap.plots.waterfall(shap.Explanation(
-            values=shap_values[0],
-            base_values=explainer.expected_value,
-            data=X_input.iloc[0],
-            feature_names=X_input.columns.tolist()
-        ), show=False)
-        st.pyplot(fig)
-
-with tab2:
-    st.header("Variant Search (HGVS ID)")
-    st.write("Enter an HGVS ID, or try one of the examples below.")
-
-    if "hgvs_query" not in st.session_state:
-        st.session_state.hgvs_query = ""
-
-    ex_col1, ex_col2, ex_col3 = st.columns(3)
-    with ex_col1:
-        if st.button("🔴 Known Pathogenic example"):
-            st.session_state.hgvs_query = "chr11:g.126275389C>T"
-    with ex_col2:
-        if st.button("🟢 Known Benign example"):
-            st.session_state.hgvs_query = "chr6:g.26092913G>A"
-    with ex_col3:
-        if st.button("🧹 Clear"):
-            st.session_state.hgvs_query = ""
-
-    hgvs_query = st.text_input("Enter HGVS ID", placeholder="chr11:g.126275389C>T", key="hgvs_query")
-
-    if st.button("Search and Predict", key="hgvs_predict"):
-        if not hgvs_query:
-            st.warning("Please enter an HGVS ID.")
-        else:
-            with st.spinner("Fetching data from myvariant.info..."):
-                try:
-                    r = requests.get(
-                        f"https://myvariant.info/v1/variant/{hgvs_query}",
-                        params={"assembly": "hg38",
-                                "fields": "dbnsfp.cadd.phred,gnomad_genome.af.af,dbnsfp.phylop.100way_vertebrate"}
-                    )
-                    r.raise_for_status()
-                    data = r.json()
-
-                    if isinstance(data, list) or data.get("notfound"):
-                        st.error("This variant was not found on myvariant.info.")
-                    else:
-                        dbnsfp = data.get("dbnsfp", {})
-                        cadd = dbnsfp.get("cadd", {}).get("phred")
-                        phylop_data = dbnsfp.get("phylop", {}).get("100way_vertebrate", {})
-                        phylop = phylop_data.get("score") if isinstance(phylop_data, dict) else None
-                        gnomad_af = data.get("gnomad_genome", {}).get("af", {}).get("af", 0)
-
-                        if cadd is None or phylop is None:
-                            st.warning("CADD/phyloP data is not available for this variant "
-                                       "(likely a non-coding region variant).")
-                        else:
-                            gnomad_log = np.log10((gnomad_af or 0) + 1e-9)
-                            X_input = pd.DataFrame([[cadd, phylop, gnomad_log]],
-                                                   columns=["cadd_phred", "phylop_100way", "gnomad_af_log"])
-
-                            proba = model.predict_proba(X_input)[0, 1]
-                            label = "Pathogenic" if proba > 0.5 else "Benign"
-
-                            st.subheader("Retrieved Values")
-                            c1, c2, c3 = st.columns(3)
-                            c1.metric("CADD Phred", f"{cadd:.2f}")
-                            c2.metric("phyloP", f"{phylop:.3f}")
-                            c3.metric("gnomAD AF", f"{gnomad_af:.6f}" if gnomad_af else "0 (not observed)")
-
-                            st.subheader("Result")
-                            if proba > 0.5:
-                                st.error(f"⚠️ Prediction: **{label}** (Pathogenic probability: {proba:.1%})")
-                            else:
-                                st.success(f"✅ Prediction: **{label}** (Pathogenic probability: {proba:.1%})")
-
-
-                            def render_gauge(proba):
-                                color = "#ff4b4b" if proba > 0.5 else "#00cc66"
-                                st.markdown(f"""
-                                <div style="background-color:#333; border-radius:10px; height:30px; width:100%;">
-                                    <div style="background-color:{color}; width:{proba * 100}%; height:100%; 
-                                                border-radius:10px; text-align:center; color:white; line-height:30px;">
-                                        {proba:.1%}
-                                    </div>
-                                </div>
-                                """, unsafe_allow_html=True)
-
-
-                            render_gauge(proba)
-
-                            st.subheader("Why this prediction (SHAP)")
-                            explainer = shap.TreeExplainer(model)
-                            shap_values = explainer.shap_values(X_input)
-
-                            fig, ax = plt.subplots(figsize=(8, 3))
-                            shap.plots.waterfall(shap.Explanation(
-                                values=shap_values[0],
-                                base_values=explainer.expected_value,
-                                data=X_input.iloc[0],
-                                feature_names=X_input.columns.tolist()
-                            ), show=False)
-                            st.pyplot(fig)
-
-                except requests.exceptions.RequestException as e:
-                    st.error(f"API request failed: {e}")
-
-with tab3:
-    st.header("VUS Explorer")
-    st.write("Variants labeled 'Uncertain Significance' in ClinVar, "
-             "for which the model offers a strong directional prediction.")
-
-
-    @st.cache_data
-    def load_vus():
-        return pd.read_csv("vus_final_checkpoint.csv")
-
-
-    vus_display = load_vus()
-
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        gene_filter = st.text_input("Filter by gene name (optional)", "")
-    with col2:
-        direction = st.selectbox("Show:", ["Highest Pathogenic probability", "Highest Benign probability"])
-
-    filtered = vus_display.copy()
-    if gene_filter:
-        filtered = filtered[filtered["GeneSymbol"].str.contains(gene_filter, case=False, na=False)]
-
-    ascending = direction == "Highest Benign probability"
-    filtered = filtered.sort_values("predicted_proba_pathogenic", ascending=ascending)
-
-    st.dataframe(
-        filtered[["hgvs_id", "GeneSymbol", "Name", "predicted_proba_pathogenic"]].head(50).style.format({
-            "predicted_proba_pathogenic": "{:.6f}"
-        }),
-        use_container_width=True
+@st.cache_data
+def read_artifact(path, expected_hash, columns=None):
+    path = Path(path)
+    if not path.exists() or sha256(path) != expected_hash:
+        raise ValidationError(f"Artifact unavailable or checksum mismatch: {path.name}")
+    if path.suffix == ".png":
+        return path.read_bytes()
+    return (
+        pd.read_parquet(path, columns=columns)
+        if path.suffix == ".parquet"
+        else json.loads(path.read_text(encoding="utf-8"))
     )
-    st.caption(f"Showing {len(filtered)} variants (filtered).")
 
-with tab4:
-    st.header("Model Performance")
 
-    st.subheader("Algorithm Comparison (5-fold CV)")
-    comparison_df = pd.read_csv("model_comparison.csv", index_col=0)
-    comparison_df.columns = ["Mean ROC-AUC"]
-    comparison_df = comparison_df.sort_values("Mean ROC-AUC", ascending=True)
-    st.bar_chart(comparison_df)
+def optional_artifact(name, columns=None):
+    expected = predictor.manifest.get("optional_files", {}).get(name)
+    if not expected:
+        st.warning(f"This model bundle does not include {name}.")
+        return None
+    try:
+        return read_artifact(str(BUNDLE / name), expected, columns)
+    except (OSError, ValueError, ValidationError) as exc:
+        st.warning(str(exc))
+        return None
 
-    st.divider()
 
-    test_results = pd.read_csv("test_predictions.csv")
+try:
+    predictor = load_predictor(str(BUNDLE.resolve()), (BUNDLE / "manifest.json").stat().st_mtime_ns)
+except (OSError, ValueError, ValidationError) as exc:
+    st.error(f"Model bundle unavailable: {exc}")
+    st.code("python -m clinvar_classifier.cli train DATASET MANIFEST artifacts/research-v2")
+    st.stop()
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Confusion Matrix")
-        cm = confusion_matrix(test_results["y_test"], test_results["y_pred"])
-        fig = go.Figure(data=go.Heatmap(
-            z=cm, x=["Benign", "Pathogenic"], y=["Benign", "Pathogenic"],
-            text=cm, texttemplate="%{text}", colorscale="Blues"
-        ))
-        fig.update_layout(xaxis_title="Predicted", yaxis_title="Actual")
-        st.plotly_chart(fig, use_container_width=True)
+manifest = predictor.manifest
+with st.sidebar:
+    st.header("Model scope")
+    st.write("GRCh38 genomic SNVs with required dbNSFP CADD/phyloP annotations.")
+    st.write("Special penetrance and risk classifications require separate evidence.")
+    st.metric("Model fitting rows", manifest.get("n_fit", "Unknown"))
+    st.caption(f"Run: {manifest['run_id']}")
+    st.caption("AF unavailable ≠ AF zero. Zero in a source is not proof of adequate coverage.")
+    st.write("[Repository](https://github.com/erenahmet17/clinvar-pathogenicity-classifier)")
+    page = st.radio("Page", ["Manual input", "Variant search", "VUS explorer", "Performance"])
 
-    with col2:
-        st.subheader("ROC Curve")
-        fpr, tpr, _ = roc_curve(test_results["y_test"], test_results["y_proba"])
-        roc_auc = auc(fpr, tpr)
-        fig2 = go.Figure()
-        fig2.add_trace(go.Scatter(x=fpr, y=tpr, name=f"ROC (AUC = {roc_auc:.4f})"))
-        fig2.add_trace(go.Scatter(x=[0, 1], y=[0, 1], name="Random", line=dict(dash="dash")))
-        fig2.update_layout(xaxis_title="False Positive Rate", yaxis_title="True Positive Rate")
-        st.plotly_chart(fig2, use_container_width=True)
 
-    st.divider()
+def render_prediction(raw):
+    import matplotlib
 
-    st.subheader("Overall Feature Importance (SHAP)")
-    with open("shap_data.pkl", "rb") as f:
-        shap_data = pickle.load(f)
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
 
-    fig3, ax = plt.subplots()
-    shap.summary_plot(shap_data["shap_values"], shap_data["X_test"], show=False)
-    st.pyplot(fig3)
+    try:
+        result = predictor.predict(raw).iloc[0]
+        st.metric("Model prioritization score", f"{result.model_score:.3f}")
+        st.write(f"**Direction:** {result.direction}")
+        st.caption(
+            "Display bands: <0.1 benign direction; >0.9 pathogenic direction; intermediate scores remain indeterminate. Bands are not ACMG/AMP classes."
+        )
+        st.progress(float(result.model_score))
+        features, contributions, base = predictor.explain(raw)
+        st.subheader("Model explanation")
+        st.caption(
+            "Tree SHAP explains the uncalibrated raw log-odds margin. The displayed score may also apply independent sigmoid calibration. SHAP is not independent clinical evidence."
+        )
+        figure, axis = plt.subplots(figsize=(8, 4))
+        axis.barh(
+            features.columns,
+            contributions[0],
+            color=["#bb5544" if v > 0 else "#4477aa" for v in contributions[0]],
+        )
+        axis.axvline(0, color="gray", linewidth=0.8)
+        axis.set_xlabel("Tree SHAP contribution to raw log-odds")
+        axis.set_title(
+            f"Base margin: {base[0]:.3f}; explained margin: {base[0] + contributions[0].sum():.3f}"
+        )
+        figure.tight_layout()
+        st.pyplot(figure)
+        plt.close(figure)
+    except (ValidationError, ValueError) as exc:
+        st.warning(str(exc))
+
+
+if page == "Manual input":
+    st.header("Manual feature input")
+    st.caption(
+        "Use matched GRCh38 sources within the SNV scope. Unknown AF is preserved explicitly."
+    )
+    with st.form("manual_input"):
+        cadd = st.number_input("CADD Phred", min_value=0.0, max_value=99.0, value=25.0)
+        phylop = st.number_input(
+            "phyloP 100way vertebrate", min_value=-20.0, max_value=15.0, value=2.0
+        )
+        known = st.checkbox("A numeric gnomAD AF is available", value=False)
+        af = st.number_input(
+            "gnomAD AF (fraction, not percent)",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.0,
+            step=0.000001,
+            format="%.8f",
+        )
+        submitted = st.form_submit_button("Score")
+    if submitted:
+        render_prediction(
+            pd.DataFrame(
+                [
+                    {
+                        "cadd_phred": cadd,
+                        "phylop_100way": phylop,
+                        "gnomad_af": af if known else None,
+                        "af_available": known,
+                    }
+                ]
+            )
+        )
+
+elif page == "Variant search":
+    st.header("Variant search — GRCh38 genomic SNV")
+    st.caption(
+        "Example: chr11:g.126275389C>T. Transcript c./p. identifiers, indels and other assemblies are outside this input contract."
+    )
+    with st.form("variant_search"):
+        hgvs = st.text_input("GRCh38 HGVS ID", placeholder="chr11:g.126275389C>T", key="hgvs_query")
+        submitted = st.form_submit_button("Fetch and score")
+    with st.expander("Documented limitation: HFE p.Cys282Tyr"):
+        st.write(
+            "chr6:g.26092913G>A is a pathogenic/low-penetrance HFE example, not a known benign control. Frequent pathogenic alleles, inheritance and penetrance need separate clinical evidence."
+        )
+        st.write("[ClinVar Variation 9](https://www.ncbi.nlm.nih.gov/clinvar/variation/9/)")
+    if submitted:
+        try:
+            hgvs = predictor.check_variant_scope(hgvs)
+            with st.spinner("Reading MyVariant hg38 annotations…"):
+                client = AnnotationClient()
+                current = client.pin_metadata()
+                expected = manifest.get("provenance", {}).get("annotation", {}).get("namespace")
+                if expected and current["namespace"] != expected:
+                    raise ValidationError(
+                        "Live source metadata differs from this training bundle. Use matched sources or retrain; no score was produced."
+                    )
+                annotation = client.get(hgvs)
+            if annotation.annotation_status != "ok":
+                st.warning(
+                    f"Required annotations unavailable: {annotation.annotation_status}. This does not establish a non-coding consequence."
+                )
+            else:
+                st.json(
+                    {
+                        "CADD": annotation.cadd_phred,
+                        "phyloP": annotation.phylop_100way,
+                        "AF": annotation.gnomad_af,
+                        "AF_available": annotation.af_available,
+                        "AC": annotation.allele_count,
+                        "AN": annotation.allele_number,
+                    }
+                )
+                render_prediction(pd.DataFrame([annotation.to_dict()]))
+        except (AnnotationError, ValidationError) as exc:
+            st.error(str(exc))
+
+elif page == "VUS explorer":
+    st.header("VUS research scores")
+    columns = [
+        "hgvs_id",
+        "GeneSymbol",
+        "Name",
+        "model_score",
+        "direction",
+        "gnomad_af",
+        "af_available",
+    ]
+    vus = optional_artifact("vus_scores.parquet", columns)
+    if vus is not None:
+        gene = st.text_input("Gene text (literal substring)")
+        band = st.selectbox(
+            "Direction", ["All", "Pathogenic direction", "Benign direction", "Indeterminate"]
+        )
+        order = st.selectbox("Order", ["Highest score", "Lowest score"])
+        mask = pd.Series(True, index=vus.index)
+        if gene.strip():
+            mask &= vus.GeneSymbol.str.contains(gene.strip(), case=False, na=False, regex=False)
+        if band != "All":
+            mask &= vus.direction.eq(band)
+        filtered = vus.loc[mask]
+        visible = (
+            filtered.nlargest(50, "model_score")
+            if order == "Highest score"
+            else filtered.nsmallest(50, "model_score")
+        )
+        st.dataframe(visible, hide_index=True, width="stretch")
+        st.caption(
+            f"Showing {len(visible):,} of {len(filtered):,} matching variants; {len(vus):,} total scores. ClinVar VUS labels remain unchanged."
+        )
+
+else:
+    st.header("Evaluation and source provenance")
+    report = optional_artifact("metrics.json")
+    if report is not None:
+        if "evaluation.png" in manifest.get("optional_files", {}):
+            figure = optional_artifact("evaluation.png")
+            if figure is not None:
+                st.image(figure, width="stretch")
+        st.caption(
+            "Selection used grouped fit-only CV; calibration had separate rows; variant and gene holdouts opened after selection. Row bootstrap intervals do not address gene clustering."
+        )
+        for name, result in report["test"].items():
+            st.subheader(name.replace("_", " ").title())
+            value = result["calibrated_score"]
+            st.metric(
+                "ROC-AUC",
+                f"{value['roc_auc']:.4f}" if value["roc_auc"] is not None else "Unavailable",
+            )
+            st.dataframe(
+                pd.DataFrame(
+                    value["confusion_matrix"],
+                    index=["Actual benign", "Actual pathogenic"],
+                    columns=["Predicted benign", "Predicted pathogenic"],
+                ),
+                width="stretch",
+            )
+            calibration = pd.DataFrame(value["calibration_bins"])
+            st.dataframe(calibration, hide_index=True, width="stretch")
+            st.line_chart(calibration.set_index("mean_score")[["positive_fraction"]])
+            st.json(
+                {
+                    "brier": value["brier"],
+                    "log_loss": value["log_loss"],
+                    "auc_ci": value.get("roc_auc_ci_95_row_bootstrap"),
+                    "subgroups": result["subgroups"],
+                    "single_feature_baselines": result["single_feature_baselines"],
+                }
+            )
+        folds = pd.DataFrame(report["development"]["fold_scores"])
+        st.subheader("Grouped development CV and feature ablation")
+        st.dataframe(folds.groupby("model").roc_auc.agg(["mean", "std"]), width="stretch")
+        st.caption(
+            "Selected-parameter CV is subject to search optimism. Similar averages do not establish statistical equivalence."
+        )
+    external = optional_artifact("external_metrics.json")
+    if external is not None:
+        st.subheader("Temporal external evaluation")
+        st.json(external)
+    with st.expander("Source and model manifest"):
+        st.json(manifest)

@@ -1,0 +1,21 @@
+name: Verify research pipeline and demo
+permissions:
+  contents: read
+on:
+  push:
+  pull_request:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install -r requirements-lock.txt
+      - run: python -m pip install --no-deps -e .
+      - run: python -m ruff check src clinvar_app tests scripts
+      - run: python -m ruff format --check src clinvar_app tests scripts
+      - run: python -m pytest -q
+      - run: python scripts/check_notebook.py

@@ -1,101 +1,105 @@
-# ClinVar Varyant Patojenite Sınıflandırıcısı
+# ClinVar SNV araştırma ve önceliklendirme
 
-Genetik varyantların (DNA'daki tekli nükleotid değişikliklerinin) hastalığa yol açma olasılığını (patojenite) tahmin eden bir makine öğrenmesi projesi. ClinVar veritabanından alınan yüksek kaliteli etiketli varyantlarla eğitilmiş bir XGBoost modeli, biyolojik olarak anlamlı üç feature (CADD, phyloP, gnomAD popülasyon frekansı) kullanarak Benign/Pathogenic ayrımı yapıyor — ve bu modeli, klinik pratikte hâlâ "belirsiz" (Uncertain Significance, VUS) olarak sınıflandırılmış \~294.000 varyanta uyguluyor.
+GRCh38 ClinVar SNV'lerinin etiketlerini CADD, phyloP ve gnomAD frekansı ile inceleyen, tekrarlanabilir bir araştırma paketi ve Streamlit demosu. Çıktı **model önceliklendirme skorudur**; hasta hastalık riski, penetrans, ACMG/AMP sınıfı veya VUS yeniden sınıflandırma kararı değildir.
 
-İnteraktif bir Streamlit demosu ile hem manuel feature girişi hem de gerçek zamanlı varyant sorgusu (myvariant.info API üzerinden) yapılabiliyor, her tahmin SHAP ile açıklanıyor.
+V2; açık etiket politikası, kayıp AF'nin korunması, gen bağlantılarını dikkate alan ayrımlar, yalnızca geliştirme verisinde model seçimi, ayrı kalibrasyon ve tarihli dış değerlendirme kullanır. Eski `0.9962` AUC, model seçimine giren eski test verisine aittir; yeni sonucun yerine gösterilmez.
 
-## Neden bu proje
+## Kurulum ve çalıştırma
 
-Klinik genetikte en büyük pratik sorunlardan biri "Variant of Uncertain Significance" (VUS) yığılması — laboratuvarların, hastanın genomunda bulduğu ama hastalıkla ilişkisini kesin olarak belirleyemediği binlerce varyant. Bu proje, VUS'ların bir kısmı için makine öğrenmesi ile yön gösterici bir olasılık skoru üretmeyi, ve bunu şeffaf/açıklanabilir bir şekilde (SHAP) sunmayı amaçlıyor.
-
-## Veri
-
-* **Kaynak**: [ClinVar](https://www.ncbi.nlm.nih.gov/clinvar/) `variant\_summary.txt` (GRCh38)
-* **Etiket kalitesi filtresi**: Sadece 2+ yıldız review status'a sahip varyantlar (`criteria provided, multiple submitters, no conflicts`, `reviewed by expert panel`, `practice guideline`) — düşük güvenilirlikli tekil-submitter etiketleri dışlandı
-* **Eğitim seti**: 239.734 Benign/Pathogenic etiketli varyant (157.528 benign / 82.206 pathogenic)
-* **VUS seti**: Uncertain Significance etiketli, ayrı tutulan ve modelin sonunda skorladığı varyantlar
-
-### Kapsam kararı: sadece coding-region varyantları
-
-Feature'ların kaynağı olan dbNSFP, yalnızca protein değiştiren (missense/nonsense) ve splice-site varyantlarını kapsıyor — synonymous ve intronic varyantlar için veri sağlamıyor. Bu nedenle proje, bilinçli olarak **coding-region varyantları** ile sınırlandırıldı. Bu, CADD/REVEL/PolyPhen gibi yerleşik pathogenicity araçlarının da kullandığı standart bir kapsam. Final eğitim seti: **79.586 SNV** (48k pathogenic / 31k benign — coding-only filtrede oran tersine döndü, çünkü sessiz/intronik varyantlar ağırlıklı olarak benign etiketlenmiş).
-
-## Feature'lar
-
-myvariant.info API'sinden (assembly=hg38) çekilen üç feature:
-
-|Feature|Açıklama|
-|-|-|
-|`cadd\_phred`|CADD skoru — varyantın genel zararlılık tahmini|
-|`phylop\_100way`|phyloP konservasyon skoru — pozisyonun evrimsel olarak ne kadar korunduğu|
-|`gnomad\_af\_log`|gnomAD popülasyon frekansının log10 dönüşümü — popülasyonda görülmeme durumu 0 ile dolduruldu|
-
-GERP skoru, phyloP ile yüksek redundancy nedeniyle (ikisi de konservasyon ölçüyor) modele dahil edilmedi.
-
-## EDA bulguları
-
-* Her üç feature de Benign/Pathogenic sınıflarını görsel olarak net ayırıyor (bkz. notebook)
-* `gnomad\_af\_log`: Pathogenic varyantlar neredeyse tamamen "popülasyonda görülmemiş" ucunda yığılıyor; Benign varyantlar geniş bir frekans aralığına yayılıyor
-* `cadd\_phred` ile `phylop\_100way` arasında orta düzey korelasyon (r=0.54) — CADD'in kendi hesaplamasında phyloP'yi zaten girdi olarak kullanmasından kaynaklanıyor
-
-## Model seçimi
-
-12 algoritma, 5-fold cross-validation ile ROC-AUC üzerinden karşılaştırıldı:
-
-|Model|ROC-AUC (mean ± std)|
-|-|-|
-|**XGBoost**|**0.9968 ± 0.0002**|
-|**LightGBM**|**0.9968 ± 0.0002**|
-|Gradient Boosting|0.9965 ± 0.0002|
-|AdaBoost|0.9965 ± 0.0002|
-|Random Forest|0.9952 ± 0.0004|
-|Logistic Regression (L1/L2)|0.9947|
-|Linear SVM|0.9947 ± 0.0004|
-|Ridge Classifier|0.9936 ± 0.0004|
-|KNN|0.9933 ± 0.0004|
-|Decision Tree|0.9923 ± 0.0008|
-|Naive Bayes|0.9921 ± 0.0004|
-
-XGBoost seçildi (LightGBM ile istatistiksel olarak eşit performans, SHAP entegrasyonu göz önünde bulunduruldu). `RandomizedSearchCV` (30 iterasyon, 5-fold) ile hiperparametre tuning yapıldı, CV skoru 0.9968 → 0.9969'a marjinal olarak iyileşti — bu, baseline modelin zaten performans tavanına yakın olduğunu gösteriyor.
-
-**Final model — hold-out test seti sonucu: 0.9962 ROC-AUC**
-
-## Model yorumlama (SHAP)
-
-SHAP analizi, feature önem sıralamasını doğruluyor:
-
-1. **`gnomad\_af\_log`** — en etkili feature; düşük/sıfır popülasyon frekansı güçlü şekilde pathogenic yönüne itiyor
-2. **`cadd\_phred`** — ikinci en etkili; yüksek skor pathogenic yönünde
-3. **`phylop\_100way`** — CADD ile collinearity nedeniyle marjinal katkı
-
-## Önemli metodolojik not: circularity riski
-
-CADD gibi tahmin araçları, kendi eğitim verilerinde dolaylı olarak ClinVar etiketleriyle örtüşen kaynaklar kullanmış olabilir (literatürde "type 1 circularity" olarak bilinen bir sorun). Elde edilen yüksek ROC-AUC, kısmen bu örtüşmeden besleniyor olabilir — bu, sonucun geçersiz olduğu anlamına gelmiyor, ama modelin sınırlarını değerlendirirken göz önünde bulundurulmalı.
-
-## VUS skorlama
-
-Final model, 293.971 VUS varyantına uygulandı:
-
-* **\~%35'i** >0.9 pathogenic olasılığıyla, **\~%15'i** <0.1 pathogenic olasılığıyla (yani yüksek güvenle benign) skorlandı — VUS'ların kabaca yarısı için model güçlü bir yön işareti veriyor
-* En yüksek pathogenic olasılıklı VUS'lar arasında bilinen klinik öneme sahip genler var: **MYH7** (hipertrofik kardiyomiyopati), **EGFR** (kanser genetiği), **CDH1** (kalıtsal mide kanseri riski) — modelin biyolojik olarak anlamlı bir sinyal yakaladığının bir işareti
-
-## Streamlit Demo (`clinvar\_app/`)
-
-Dört sekmeli interaktif uygulama:
-
-1. **Manuel Feature Girişi** — CADD/phyloP/gnomAD değerlerini elle girip anlık tahmin + SHAP açıklaması alma
-2. **Varyant Ara (HGVS ID)** — myvariant.info API'sine canlı sorgu atarak gerçek bir varyantı ID ile arama (hazır örnek butonlarıyla)
-3. **VUS Gezgini** — skorlanmış VUS listesini gen adına göre filtreleyip inceleme
-4. **Model Performansı** — 12 algoritma karşılaştırması, confusion matrix, ROC eğrisi, genel SHAP özeti
-
-### Çalıştırma
+Test edilen ortam **Python 3.12**. Repo root'unda:
 
 ```bash
-cd clinvar\_app
-pip install streamlit xgboost pandas numpy scikit-learn shap requests plotly
-streamlit run app.py
+python -m venv .venv
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+# Linux/macOS: source .venv/bin/activate
+python -m pip install -r requirements-lock.txt
+python -m pip install --no-deps -e .
+python -m streamlit run clinvar_app/app.py
 ```
 
-## Kullanılan araçlar
+Yollar uygulama dosyasına göre çözülür; çalışma dizinine bağımlı değildir. Başka bir doğrulanmış model bundle'ı seçmek için `CLINVAR_BUNDLE_DIR` ortam değişkenini kullan. VUS/performans dosyalarının eksik olması manuel tahmini durdurmaz; ilgili sayfa açıklama gösterir.
 
-Python, pandas, scikit-learn, XGBoost, LightGBM, SHAP, Streamlit, myvariant.info API
+## Veri ve kapsam
 
+- Kaynak: [NCBI tarihli ClinVar arşivleri](https://ftp.ncbi.nlm.nih.gov/pub/clinvar/tab_delimited/archive/). Snapshot dosyası, URL'si ve SHA-256 kaydedilir.
+- Assembly: **GRCh38**. Desteklenen giriş genomik tek nükleotid değişimidir: `chr11:g.126275389C>T`. c./p. transkript ifadeleri ve indeller bu sözleşmeye girmez.
+- Review filtresi: `criteria provided, multiple submitters, no conflicts`, `reviewed by expert panel`, `practice guideline`. Yıldızlar inceleme/uzlaşma düzeyidir; mutlak doğru etiket garantisi değildir. [ClinVar tanımı](https://www.ncbi.nlm.nih.gov/clinvar/docs/review_status/).
+- İkili etiketler: P, LP, P/LP → 1; B, LB, B/LB → 0. Düşük penetrans, risk faktörü/risk alleli, çelişkili ve diğer özel etiketler dışlanır. Ham etiketler ve kategori sayımları saklanır.
+- `Uncertain significance`, yalnızca skorlanacak ayrı kohorttur. Eğitim etiketi olarak kullanılmaz.
+- Gerçek kapsam: **gerekli dbNSFP CADD ve phyloP anotasyonu bulunan SNV'ler**. Anotasyon bulunmaması tek başına non-coding consequence kanıtı değildir. dbNSFP non-synonymous ve splice-site SNV'leri kapsar; CADD'in kendisi genom genelinde skor verir. [dbNSFP](https://www.dbnsfp.org/), [CADD](https://cadd.bihealth.org/info).
+
+HFE p.Cys282Tyr (`chr6:g.26092913G>A`) patojenik/düşük penetranslı bir istisnadır; bilinen benign kontrol değildir. Snapshot'ta bilinen özel etiketli kimlikler bundle'da tutulur ve canlı sorguda kapsam dışı olarak reddedilir. Bu liste bütün klinik istisnaların eksiksiz bir kataloğu değildir. [ClinVar Variation 9](https://www.ncbi.nlm.nih.gov/clinvar/variation/9/).
+
+## Özellik sözleşmesi
+
+| Özellik | Politika |
+|---|---|
+| `cadd_phred` | Gerekli, sonlu CADD Phred değeri |
+| `phylop_100way` | Gerekli, sonlu phyloP 100way vertebrate değeri |
+| `gnomad_af_log` | AF mevcutsa `log10(AF + 1e-9)`; yoksa NaN korunur |
+| `gnomad_af_missing` | Frekans bilinmiyorsa 1, sayısal değer varsa 0 |
+
+Gerçek sayısal AF=0 için log=-9 ve missing=0. Alan yoksa log=NaN ve missing=1. **Kaynakta alanın olmaması popülasyonda kesin gözlenmeme anlamına gelmez.** Mevcut AC/AN değerleri korunur; olmayan coverage/AN bilgisi üretilmez. [gnomAD kapsam ve allele-number açıklaması](https://gnomad.broadinstitute.org/news/2024-04-gnomad-v4-1/).
+
+Aynı fonksiyon eğitim, manuel giriş ve canlı sorguda kullanılır. Anotasyonun kimliği istenen kimlikten farklıysa veya çoklu değerler belirsizse skor üretilmez. Canlı kaynak metaverisi eğitim bundle'ından farklıysa yeniden eğitim/eşleşen kaynak gerekir.
+
+## Tam deneyin yeniden üretilmesi
+
+Aşağıdaki komutlar bir kez tamamlanan koşuyu üzerine yazmaz. Büyük ham veri ve API cache'i `data/` altında yereldir; Git'e dahil edilmez. Anotasyon yarıda kalırsa aynı komutu/cache'i kullanmak tamamlanan kimlikleri tekrar indirmez. Başarısız batch'ler `pending.json` içinde tutulur; eksik bir dataset başarıyla bitmiş sayılmaz. Aynı cache'e eşzamanlı ikinci yazıcı kilitle reddedilir.
+
+```bash
+python scripts/download_snapshot.py 2026-07
+python scripts/download_snapshot.py 2026-10
+python -m clinvar_classifier.cli prepare data/raw/variant_summary_2026-07.txt.gz data/processed/2026-07 --source-url https://ftp.ncbi.nlm.nih.gov/pub/clinvar/tab_delimited/archive/variant_summary_2026-07.txt.gz
+python -m clinvar_classifier.cli prepare data/raw/variant_summary_2026-10.txt.gz data/processed/2026-10 --source-url https://ftp.ncbi.nlm.nih.gov/pub/clinvar/tab_delimited/archive/variant_summary_2026-10.txt.gz
+python -m clinvar_classifier.cli annotate data/processed/2026-07/cohort.parquet data/annotation_cache data/processed/2026-07 --workers 4
+python -m clinvar_classifier.cli annotate data/processed/2026-10/cohort.parquet data/annotation_cache data/processed/2026-10 --workers 4
+python -m clinvar_classifier.cli train data/processed/2026-07/dataset.parquet data/processed/2026-07/dataset_manifest.json artifacts/experiments/reproduction --iterations 12 --folds 5
+python -m clinvar_classifier.cli evaluate-external data/processed/2026-07/dataset.parquet data/processed/2026-10/dataset.parquet artifacts/experiments/reproduction
+python -m clinvar_classifier.cli score-vus data/processed/2026-10/dataset.parquet artifacts/experiments/reproduction
+```
+
+Arşiv hash'ini `download_snapshot.py --expected-sha256 HASH` ile doğrulayabilirsin. Tam yeniden üretimde anotasyon kaynağı da aynı kalmalı: kaynak metaverisi değişmişse yeni bir cache/run gerekir. Eski anotasyon cache'ini korumak tam dataset tekrarını sağlar. Manifestte snapshot/annotation/dataset kimlikleri ve eğitim kodu hash'leri bulunur.
+
+## Değerlendirme tasarımı
+
+1. Aynı normalize varyant kimlikleri tekrar/etiket çelişkisi için kontrol edilir. Birleştirmeler one-to-one doğrulanır.
+2. Ortak genleri olan çok genli anotasyonlar bağlı bileşenlere birleştirilir. Grupların yaklaşık %20'si gen testi için ayrılır; bu gruplar geliştirme ve kalibrasyonda bulunmaz.
+3. Kalan satırların %20'si varyant testi; geri kalanların %20'si kalibrasyon olarak ayrılır. Varyant kimlikleri tüm partition'lar arasında ayrıdır. Satır oranları gen grubu büyüklüklerine göre değişir.
+4. Algoritma karşılaştırması, ablation ve randomized search yalnızca **fit** satırlarında, gen ayrık CV fold'larıyla yapılır. Logistic regression preprocessing'i fold-local Pipeline içindedir. XGBoost model ailesi önceden seçilmiştir; test skoruna göre algoritma tercih edilmez.
+5. Ayrı kalibrasyon satırlarının raw marginleriyle ağırlıksız sigmoid fit edilir. Varyant ve gen testleri bundan sonra açılır. Fit ve kalibrasyon arasında gen ayrıklığı iddiası yoktur; satır kimlikleri ayrıdır.
+6. Temmuz'daki tüm etiketli kohort kimlikleri Ekim dış testinden çıkarılır. Yeni etiketli varyantlar ve Temmuz VUS olup Ekim P/LP–B/LB olanlar ayrıca değerlendirilir. Kaynak anotasyon sürümleri sabit tutulur.
+
+Ölçümler: ROC-AUC, average precision, confusion matrix, sensitivity/specificity, precision/NPV, Brier, log loss, örneklem sayılarıyla kalibrasyon kutuları, AF alt grupları ve tek özellikli skor baseline'ları. 500 tekrarlı sınıfa göre tabakalı satır bootstrap aralığı gen bağımlılığını kapsamaz. Stop/splice Name desenleri yalnızca proxy'dir; kesin VEP veya missense-only sonucu diye sunulmaz.
+
+Kalibrasyon eğitim dağılımındaki skoru ayarlar; hedef klinik/VUS popülasyonundaki mutlak olasılığı garanti etmez. Zaman bazlı ClinVar kontrolü fonksiyonel deney yerine geçmez; etiket değişimleri bilgisayarlı kanıtlardan etkilenmiş olabilir. `0.1/0.9` gösterim bantları ACMG/AMP kriterleri değildir. [ClinGen PP3/BP4 kalibrasyon çalışması](https://pmc.ncbi.nlm.nih.gov/articles/PMC9748256/).
+
+CADD'in temel eğitim etiketleri insan soyunda türemiş ve simüle varyantlara dayanır. Bu repoda doğrudan ClinVar eğitim örtüşmesi kanıtlanmış değildir. Kaynak predictor tuning'i, protein/gen bağımlılığı ve ClinVar kürasyonundaki ortak kanıtlar ayrı değerlendirme konularıdır. [CADD eğitim verileri](https://cadd.bihealth.org/training), [circularity çalışması](https://pubmed.ncbi.nlm.nih.gov/25684150/).
+
+## Mimari ve artefaktlar
+
+```text
+src/clinvar_classifier/  # schemas, data, annotation, features, split, train, evaluate, inference, cli
+clinvar_app/app.py       # ince arayüz; yalnızca seçilen sayfa çalışır
+clinvar.ipynb           # ortak modülleri kullanan çevrimdışı inceleme
+tests/                  # veri/split/cache/model ve Streamlit testleri
+scripts/                # snapshot indirme, ortam kilidi, notebook, tarihsel model dönüşümü
+artifacts/research-v2/   # manifest + native model + kimlikli ölçüm ve Parquet çıktıları
+artifacts/legacy/        # eski modelin yalnızca tarihsel karşılaştırma kopyası
+data/                   # yerel ham snapshot, tam kohortlar ve devam ettirilebilir cache
+```
+
+Uygulama pickle yüklemez. Model native UBJSON, tablo verileri Parquet, metaveri JSON'dur. Bundle'ın zorunlu model hash'i başlangıçta; isteğe bağlı dosya hash'leri ilgili sayfa açıldığında doğrulanır. Model feature order manifest ile uyuşmalıdır. Genel SHAP, XGBoost native Tree SHAP ile üretilir ve raw-margin additivity kontrolünden geçer. Katkılar log-odds ölçeğindedir; kalibre skorun yüzde puan etkileri değildir.
+
+VUS gezgini yalnızca gereken kolonları okur; literal gen araması yapar, en çok 50 satır seçer ve gösterilen/toplam sayısını ayrı yazar. Güncel sonuçların tamamı [koşu raporunda](docs/RUN_RESULTS.md), denetimdeki 26 bulguya verilen yanıtlar [uygulama raporunda](docs/IMPLEMENTATION_REPORT.md) yer alır.
+
+## Kontroller
+
+```bash
+python -m pytest -q
+python -m ruff check src clinvar_app tests scripts
+python -m ruff format --check src clinvar_app tests scripts
+python scripts/check_notebook.py
+```
+
+CI bu küçük kontrolleri çalıştırır; her PR'da büyük veri indirme ve tam eğitimi tekrar etmez. Notebook baştan sona çevrimdışı çalışır; bundle yoksa sahte performans yerine eksik koşu bilgisini gösterir.

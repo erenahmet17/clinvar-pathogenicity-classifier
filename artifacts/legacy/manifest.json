@@ -1,0 +1,20 @@
+{
+  "schema_version": 2,
+  "run_id": "legacy-05511a0",
+  "assembly": "GRCh38",
+  "feature_contract": "legacy-zero-af-v1",
+  "features": [
+    "cadd_phred",
+    "phylop_100way",
+    "gnomad_af_log"
+  ],
+  "validation_status": "historical comparison only; never default production bundle",
+  "clinical_probability_validated": false,
+  "source_pickle_sha256": "dc02271bf24a4c304829fa4be619d796bab825325a727035f90f118c65269552",
+  "files": {
+    "model.ubj": "db7646042f6fe3c07bd411197696862902977d4857a95b517fa5085e656684cf"
+  },
+  "optional_files": {
+    "historical_metrics.json": "dfa4da1e608a3fe78f81b31a4495705e0a18274ac57fcb43c50c6d995de646b3"
+  }
+}

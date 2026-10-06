@@ -15,5 +15,16 @@ vus_final_checkpoint.csv
 .idea/
 __pycache__/
 
-!clinvar_app/vus_final_checkpoint.csv
-!clinvar_app/xgb_model.pkl
+*.pkl
+*.joblib
+
+# Local reproducible source data and resumable annotation cache
+data/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+.coverage
+validation_logs/
+artifacts/experiments/
