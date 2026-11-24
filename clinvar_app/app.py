@@ -13,11 +13,12 @@ import pandas as pd
 import streamlit as st
 
 from clinvar_classifier.annotation import AnnotationClient, AnnotationError
+from clinvar_classifier.features import CONTRACT_V3, FEATURES_V3, V3_BOUNDS, V3_REQUIRED
 from clinvar_classifier.inference import Predictor
 from clinvar_classifier.io import sha256
 from clinvar_classifier.schemas import ValidationError
 
-BUNDLE = Path(os.environ.get("CLINVAR_BUNDLE_DIR", str(ROOT / "artifacts" / "research-v2")))
+BUNDLE = Path(os.environ.get("CLINVAR_BUNDLE_DIR", str(ROOT / "artifacts" / "research-v3")))
 st.set_page_config(page_title="ClinVar SNV Research", layout="wide")
 st.title("🧬 ClinVar SNV Research & Prioritization")
 st.info(
@@ -60,17 +61,37 @@ try:
     predictor = load_predictor(str(BUNDLE.resolve()), (BUNDLE / "manifest.json").stat().st_mtime_ns)
 except (OSError, ValueError, ValidationError) as exc:
     st.error(f"Model bundle unavailable: {exc}")
-    st.code("python -m clinvar_classifier.cli train DATASET MANIFEST artifacts/research-v2")
+    st.code("python -m clinvar_classifier.cli train DATASET MANIFEST artifacts/research-v3")
     st.stop()
 
 manifest = predictor.manifest
+V3 = manifest.get("feature_contract") == CONTRACT_V3
+LABELS = {
+    "esm1b": "ESM1b rankscore",
+    "sift4g": "SIFT4G converted rankscore",
+    "provean": "PROVEAN converted rankscore",
+    "gerp_91way": "GERP 91 mammals",
+    "phylop_100way": "phyloP 100way vertebrate",
+    "phylop_470way": "phyloP 470way mammalian",
+    "phastcons_100way": "phastCons 100way vertebrate",
+    "alphamissense": "AlphaMissense rankscore",
+    "cadd_phred": "CADD Phred",
+}
 with st.sidebar:
     st.header("Model scope")
-    st.write("GRCh38 genomic SNVs with required dbNSFP CADD/phyloP annotations.")
+    if V3:
+        st.write("GRCh38 dbNSFP **missense** SNVs with required CADD/phyloP annotations.")
+        st.write(
+            "Population frequency is **not** a model input: ACMG/AMP frequency criteria "
+            "(BA1/BS1/PM2) are part of how ClinVar labels are assigned, so it is shown "
+            "separately as its own evidence line."
+        )
+    else:
+        st.write("GRCh38 genomic SNVs with required dbNSFP CADD/phyloP annotations.")
+        st.caption("AF unavailable ≠ AF zero. Zero in a source is not proof of adequate coverage.")
     st.write("Special penetrance and risk classifications require separate evidence.")
     st.metric("Model fitting rows", manifest.get("n_fit", "Unknown"))
     st.caption(f"Run: {manifest['run_id']}")
-    st.caption("AF unavailable ≠ AF zero. Zero in a source is not proof of adequate coverage.")
     st.write("[Repository](https://github.com/erenahmet17/clinvar-pathogenicity-classifier)")
     page = st.radio("Page", ["Manual input", "Variant search", "VUS explorer", "Performance"])
 
@@ -112,7 +133,33 @@ def render_prediction(raw):
         st.warning(str(exc))
 
 
-if page == "Manual input":
+def manual_v3():
+    st.caption(
+        "Enter dbNSFP 4.8a values for a missense SNV. Leave optional scores blank when "
+        "unavailable; CADD and phyloP 100way are required. Population frequency is not used."
+    )
+    with st.form("manual_input"):
+        values = {}
+        for field in FEATURES_V3:
+            low, high = V3_BOUNDS[field]
+            default = {"cadd_phred": 25.0, "phylop_100way": 2.0}.get(field)
+            values[field] = st.number_input(
+                LABELS[field] + ("" if field in V3_REQUIRED else " (optional)"),
+                min_value=float(low),
+                max_value=float(high),
+                value=default,
+                format="%.5f",
+            )
+        submitted = st.form_submit_button("Score")
+    if submitted:
+        render_prediction(pd.DataFrame([values]))
+
+
+if page == "Manual input" and V3:
+    st.header("Manual feature input")
+    manual_v3()
+
+elif page == "Manual input":
     st.header("Manual feature input")
     st.caption(
         "Use matched GRCh38 sources within the SNV scope. Unknown AF is preserved explicitly."
@@ -174,6 +221,28 @@ elif page == "Variant search":
                 st.warning(
                     f"Required annotations unavailable: {annotation.annotation_status}. This does not establish a non-coding consequence."
                 )
+            elif V3:
+                record = annotation.to_dict()
+                st.json(
+                    {LABELS[f]: record[f] for f in FEATURES_V3}
+                    | {"consequence": record["consequence"]}
+                )
+                st.write("**Population frequency (separate evidence, not a model input)**")
+                st.json(
+                    {
+                        "gnomAD genome AF": annotation.gnomad_af,
+                        "AF available": annotation.af_available,
+                        "AC": annotation.allele_count,
+                        "AN": annotation.allele_number,
+                    }
+                )
+                if annotation.consequence != "missense":
+                    st.warning(
+                        f"dbNSFP consequence is '{annotation.consequence}'. This model scores "
+                        "missense SNVs only; no score produced."
+                    )
+                else:
+                    render_prediction(pd.DataFrame([record]))
             else:
                 st.json(
                     {
@@ -234,6 +303,12 @@ else:
         st.caption(
             "Selection used grouped fit-only CV; calibration had separate rows; variant and gene holdouts opened after selection. Row bootstrap intervals do not address gene clustering."
         )
+        if V3:
+            st.caption(
+                "The development table includes a reference row with gnomAD AF added. It is "
+                "never selectable: its gain reflects frequency criteria inside the labels. "
+                "Independent checks (ClinGen erepo strata, BAP1 SGE) are in experiments/CIRCULARITY_RESULTS.md."
+            )
         for name, result in report["test"].items():
             st.subheader(name.replace("_", " ").title())
             value = result["calibrated_score"]

@@ -6,7 +6,7 @@ import pytest
 import xgboost as xgb
 
 from clinvar_classifier.evaluate import external_cohort, metrics, validate_temporal_sources
-from clinvar_classifier.features import FEATURES_V2, make_features
+from clinvar_classifier.features import CONTRACT_V2, FEATURES_V2, make_features
 from clinvar_classifier.inference import Predictor
 from clinvar_classifier.io import sha256, write_json, write_parquet
 from clinvar_classifier.schemas import ValidationError
@@ -16,10 +16,10 @@ from clinvar_classifier.train import train_run
 @pytest.fixture
 def tiny_bundle(tmp_path, small_dataset):
     model = xgb.XGBClassifier(n_estimators=15, max_depth=2, n_jobs=1, random_state=42)
-    model.fit(make_features(small_dataset), small_dataset.label)
+    model.fit(make_features(small_dataset, CONTRACT_V2), small_dataset.label)
     model.save_model(tmp_path / "model.ubj")
     vus = small_dataset.iloc[:5].copy()
-    vus["model_score"] = model.predict_proba(make_features(vus))[:, 1]
+    vus["model_score"] = model.predict_proba(make_features(vus, CONTRACT_V2))[:, 1]
     vus["direction"] = "Indeterminate"
     write_parquet(tmp_path / "vus_scores.parquet", vus)
     write_json(
@@ -124,8 +124,11 @@ def test_temporal_source_namespace_hash_and_order():
         validate_temporal_sources(early, late, early, "early", "late")
 
 
-def test_training_writes_disjoint_identity_manifest(tmp_path, small_dataset):
-    report = train_run(small_dataset, tmp_path, {"test_fixture": True}, iterations=1, folds=2)
+@pytest.mark.parametrize("contract", ["snv-af-missing-v2", "missense-noaf-v3"])
+def test_training_writes_disjoint_identity_manifest(tmp_path, small_dataset, contract):
+    report = train_run(
+        small_dataset, tmp_path, {"test_fixture": True}, iterations=1, folds=2, contract=contract
+    )
     manifest = json.loads((tmp_path / "manifest.json").read_text())
     assert manifest["n_fit"] + manifest["n_calibration"] < len(small_dataset)
     assert report["test"]["gene_test"]["calibrated_score"]["n"] > 0
@@ -139,5 +142,28 @@ def test_training_writes_disjoint_identity_manifest(tmp_path, small_dataset):
     predictor = Predictor(tmp_path)
     assert predictor.manifest["calibration"]["slope"] > 0
     assert len(predictor.predict(small_dataset.iloc[:2])) == 2
+    assert predictor.manifest["feature_contract"] == contract
     with pytest.raises(ValidationError):
-        train_run(small_dataset, tmp_path, {}, iterations=1, folds=2)
+        train_run(small_dataset, tmp_path, {}, iterations=1, folds=2, contract=contract)
+
+
+@pytest.fixture
+def tiny_v3_bundle(tmp_path_factory, small_dataset):
+    path = tmp_path_factory.mktemp("v3bundle")
+    train_run(small_dataset, path, {"test_fixture": True}, iterations=1, folds=2)
+    return path
+
+
+def test_v3_bundle_scores_missense_only(tiny_v3_bundle, small_dataset):
+    from clinvar_classifier.cli import scope_filter
+
+    predictor = Predictor(tiny_v3_bundle)
+    assert predictor.manifest["feature_contract"] == "missense-noaf-v3"
+    assert "gnomad_af_log" not in predictor.manifest["features"]
+    kept, outside = scope_filter(small_dataset, predictor)
+    assert outside == (small_dataset.consequence != "missense").sum() > 0
+    assert len(predictor.predict(kept.iloc[:5])) == 5
+    with pytest.raises(ValidationError, match="missense"):
+        predictor.predict(small_dataset[small_dataset.consequence == "stop_gained"].iloc[:1])
+    splits = pd.read_parquet(tiny_v3_bundle / "split_manifest.parquet")
+    assert set(splits.hgvs_id) <= set(kept.hgvs_id)

@@ -1,8 +1,10 @@
-# ClinVar SNV araştırma ve önceliklendirme
+# ClinVar missense araştırma ve önceliklendirme
 
-GRCh38 ClinVar SNV'lerinin etiketlerini CADD, phyloP ve gnomAD frekansı ile inceleyen, tekrarlanabilir bir araştırma paketi ve Streamlit demosu. Çıktı **model önceliklendirme skorudur**; hasta hastalık riski, penetrans, ACMG/AMP sınıfı veya VUS yeniden sınıflandırma kararı değildir.
+GRCh38 ClinVar missense SNV'leri için hesaplamalı kanıt (PP3/BP4 tarzı) skoru üreten, tekrarlanabilir bir araştırma paketi ve Streamlit demosu. Çıktı **model önceliklendirme skorudur**; hasta hastalık riski, penetrans, ACMG/AMP sınıfı veya VUS yeniden sınıflandırma kararı değildir.
 
-V2; açık etiket politikası, kayıp AF'nin korunması, gen bağlantılarını dikkate alan ayrımlar, yalnızca geliştirme verisinde model seçimi, ayrı kalibrasyon ve tarihli dış değerlendirme kullanır. Eski `0.9962` AUC, model seçimine giren eski test verisine aittir; yeni sonucun yerine gösterilmez.
+**V3 (`research-v3`, S4 modeli) güncel varsayılandır.** V2'de kullanılan gnomAD allel frekansının ClinVar etiketleriyle döngüsel olduğu gösterildi: ACMG/AMP frekans kriterleri (BA1/BS1/PM2) etiketin bir parçası. V3 bu yüzden AF'yi özellik olarak kullanmaz, yalnızca dbNSFP missense SNV'leri skorlar ve etiket görmemiş skorları (ESM1b, SIFT4G, PROVEAN, korunmuşluk) AlphaMissense ve CADD ile birleştirir. AF uygulamada ayrı bir kanıt satırı olarak gösterilir. Döngüsellik analizi, ablasyonlar ve bağımsız doğrulama (ClinGen erepo, BAP1 SGE): [experiments/CIRCULARITY_RESULTS.md](experiments/CIRCULARITY_RESULTS.md). V3 koşu sonuçları: [docs/RUN_RESULTS_V3.md](docs/RUN_RESULTS_V3.md).
+
+V2 bundle'ı (`research-v2`, AF dahil) tarihsel karşılaştırma için tutulur; yüksek AUC'si (0.994) kısmen frekans döngüselliğinden gelir. Eski `0.9962` AUC ise model seçimine giren eski test verisine aittir.
 
 ## Kurulum ve çalıştırma
 
@@ -26,11 +28,30 @@ Yollar uygulama dosyasına göre çözülür; çalışma dizinine bağımlı de�
 - Review filtresi: `criteria provided, multiple submitters, no conflicts`, `reviewed by expert panel`, `practice guideline`. Yıldızlar inceleme/uzlaşma düzeyidir; mutlak doğru etiket garantisi değildir. [ClinVar tanımı](https://www.ncbi.nlm.nih.gov/clinvar/docs/review_status/).
 - İkili etiketler: P, LP, P/LP → 1; B, LB, B/LB → 0. Düşük penetrans, risk faktörü/risk alleli, çelişkili ve diğer özel etiketler dışlanır. Ham etiketler ve kategori sayımları saklanır.
 - `Uncertain significance`, yalnızca skorlanacak ayrı kohorttur. Eğitim etiketi olarak kullanılmaz.
-- Gerçek kapsam: **gerekli dbNSFP CADD ve phyloP anotasyonu bulunan SNV'ler**. Anotasyon bulunmaması tek başına non-coding consequence kanıtı değildir. dbNSFP non-synonymous ve splice-site SNV'leri kapsar; CADD'in kendisi genom genelinde skor verir. [dbNSFP](https://www.dbnsfp.org/), [CADD](https://cadd.bihealth.org/info).
+- V3 kapsamı: **dbNSFP amino asit alanına göre missense olan ve CADD/phyloP anotasyonu bulunan SNV'ler**. Stop-gain, stop-loss, synonymous ve birden çok transkriptte farklı değişim gösteren (`ambiguous`) varyantlar skorlanmaz.
+- V2 kapsamı: **gerekli dbNSFP CADD ve phyloP anotasyonu bulunan SNV'ler**. Anotasyon bulunmaması tek başına non-coding consequence kanıtı değildir. dbNSFP non-synonymous ve splice-site SNV'leri kapsar; CADD'in kendisi genom genelinde skor verir. [dbNSFP](https://www.dbnsfp.org/), [CADD](https://cadd.bihealth.org/info).
 
 HFE p.Cys282Tyr (`chr6:g.26092913G>A`) patojenik/düşük penetranslı bir istisnadır; bilinen benign kontrol değildir. Snapshot'ta bilinen özel etiketli kimlikler bundle'da tutulur ve canlı sorguda kapsam dışı olarak reddedilir. Bu liste bütün klinik istisnaların eksiksiz bir kataloğu değildir. [ClinVar Variation 9](https://www.ncbi.nlm.nih.gov/clinvar/variation/9/).
 
 ## Özellik sözleşmesi
+
+### V3 — `missense-noaf-v3` (varsayılan)
+
+| Özellik | Kaynak (dbNSFP 4.8a) | Etiketle eğitilmiş mi? | Politika |
+|---|---|---|---|
+| `esm1b` | ESM1b rankscore | Hayır (protein dil modeli) | İsteğe bağlı |
+| `sift4g` | SIFT4G converted rankscore | Hayır (homoloji) | İsteğe bağlı |
+| `provean` | PROVEAN converted rankscore | Hayır (homoloji) | İsteğe bağlı |
+| `gerp_91way` | GERP 91 memeli | Hayır (korunmuşluk) | İsteğe bağlı |
+| `phylop_100way` | phyloP 100way vertebrate | Hayır (korunmuşluk) | **Gerekli** |
+| `phylop_470way` | phyloP 470way memeli | Hayır (korunmuşluk) | İsteğe bağlı |
+| `phastcons_100way` | phastCons 100way vertebrate | Hayır (korunmuşluk) | İsteğe bağlı |
+| `alphamissense` | AlphaMissense rankscore | ClinVar yok; zayıf etiket olarak popülasyon frekansı | İsteğe bağlı |
+| `cadd_phred` | CADD Phred | ClinVar yok | **Gerekli** |
+
+İsteğe bağlı skor kaynakta yoksa veya transkriptler arasında birden çok farklı değer varsa bilinmiyor (NaN) olarak kalır; tahmin edilmez. XGBoost eksik değerleri doğal olarak işler. Kullanılmayan karşılaştırma: REVEL (ClinVar/HGMD örtüşmesi) ve AF içeren skorlar (ClinPred, BayesDel `add_af`) modele girmez.
+
+### V2 — `snv-af-missing-v2` (tarihsel)
 
 | Özellik | Politika |
 |---|---|
@@ -41,7 +62,7 @@ HFE p.Cys282Tyr (`chr6:g.26092913G>A`) patojenik/düşük penetranslı bir istis
 
 Gerçek sayısal AF=0 için log=-9 ve missing=0. Alan yoksa log=NaN ve missing=1. **Kaynakta alanın olmaması popülasyonda kesin gözlenmeme anlamına gelmez.** Mevcut AC/AN değerleri korunur; olmayan coverage/AN bilgisi üretilmez. [gnomAD kapsam ve allele-number açıklaması](https://gnomad.broadinstitute.org/news/2024-04-gnomad-v4-1/).
 
-Aynı fonksiyon eğitim, manuel giriş ve canlı sorguda kullanılır. Anotasyonun kimliği istenen kimlikten farklıysa veya çoklu değerler belirsizse skor üretilmez. Canlı kaynak metaverisi eğitim bundle'ından farklıysa yeniden eğitim/eşleşen kaynak gerekir.
+V2'de gerçek sayısal AF=0 ile bilinmeyen AF ayrı tutulur. Aynı fonksiyon eğitim, manuel giriş ve canlı sorguda kullanılır. Anotasyonun kimliği istenen kimlikten farklıysa veya çoklu değerler belirsizse skor üretilmez. Canlı kaynak metaverisi eğitim bundle'ından farklıysa yeniden eğitim/eşleşen kaynak gerekir.
 
 ## Tam deneyin yeniden üretilmesi
 
@@ -52,12 +73,15 @@ python scripts/download_snapshot.py 2026-07
 python scripts/download_snapshot.py 2026-10
 python -m clinvar_classifier.cli prepare data/raw/variant_summary_2026-07.txt.gz data/processed/2026-07 --source-url https://ftp.ncbi.nlm.nih.gov/pub/clinvar/tab_delimited/archive/variant_summary_2026-07.txt.gz
 python -m clinvar_classifier.cli prepare data/raw/variant_summary_2026-10.txt.gz data/processed/2026-10 --source-url https://ftp.ncbi.nlm.nih.gov/pub/clinvar/tab_delimited/archive/variant_summary_2026-10.txt.gz
-python -m clinvar_classifier.cli annotate data/processed/2026-07/cohort.parquet data/annotation_cache data/processed/2026-07 --workers 4
-python -m clinvar_classifier.cli annotate data/processed/2026-10/cohort.parquet data/annotation_cache data/processed/2026-10 --workers 4
-python -m clinvar_classifier.cli train data/processed/2026-07/dataset.parquet data/processed/2026-07/dataset_manifest.json artifacts/experiments/reproduction --iterations 12 --folds 5
-python -m clinvar_classifier.cli evaluate-external data/processed/2026-07/dataset.parquet data/processed/2026-10/dataset.parquet artifacts/experiments/reproduction
-python -m clinvar_classifier.cli score-vus data/processed/2026-10/dataset.parquet artifacts/experiments/reproduction
+python -m clinvar_classifier.cli annotate data/processed/2026-07/cohort.parquet data/annotation_cache_v3pipe data/processed/2026-07-v3 --workers 4
+python -m clinvar_classifier.cli annotate data/processed/2026-10/cohort.parquet data/annotation_cache_v3pipe data/processed/2026-10-v3 --workers 4
+python -m clinvar_classifier.cli train data/processed/2026-07-v3/dataset.parquet data/processed/2026-07-v3/dataset_manifest.json artifacts/research-v3 --iterations 12 --folds 5 --contract missense-noaf-v3
+python -m clinvar_classifier.cli evaluate-external data/processed/2026-07-v3/dataset.parquet data/processed/2026-10-v3/dataset.parquet artifacts/research-v3
+python -m clinvar_classifier.cli score-vus data/processed/2026-10-v3/dataset.parquet artifacts/research-v3
+python scripts/verify_bundle.py artifacts/research-v3
 ```
+
+`prepare` adımı v2 ile aynıdır; `annotate` çıktısı v3 alanlarını da içerdiği için v2 modeli aynı dataset üzerinde `--contract snv-af-missing-v2` ile yeniden eğitilebilir. Döngüsellik deneyleri ve bağımsız doğrulama scriptleri `experiments/` altındadır (bkz. sonuç dosyasının başlıkları).
 
 Arşiv hash'ini `download_snapshot.py --expected-sha256 HASH` ile doğrulayabilirsin. Tam yeniden üretimde anotasyon kaynağı da aynı kalmalı: kaynak metaverisi değişmişse yeni bir cache/run gerekir. Eski anotasyon cache'ini korumak tam dataset tekrarını sağlar. Manifestte snapshot/annotation/dataset kimlikleri ve eğitim kodu hash'leri bulunur.
 
@@ -84,7 +108,9 @@ clinvar_app/app.py       # ince arayüz; yalnızca seçilen sayfa çalışır
 clinvar.ipynb           # ortak modülleri kullanan çevrimdışı inceleme
 tests/                  # veri/split/cache/model ve Streamlit testleri
 scripts/                # snapshot indirme, ortam kilidi, notebook, tarihsel model dönüşümü
-artifacts/research-v2/   # manifest + native model + kimlikli ölçüm ve Parquet çıktıları
+artifacts/research-v3/   # varsayılan S4 bundle'ı (missense, AF'siz): manifest + native model + ölçümler
+artifacts/research-v2/   # AF içeren önceki bundle; döngüsellik karşılaştırması için tutulur
+experiments/             # döngüsellik ablasyonu, nadir missense, dbNSFP özellikleri, erepo/BAP1 doğrulaması
 artifacts/legacy/        # eski modelin yalnızca tarihsel karşılaştırma kopyası
 data/                   # yerel ham snapshot, tam kohortlar ve devam ettirilebilir cache
 ```

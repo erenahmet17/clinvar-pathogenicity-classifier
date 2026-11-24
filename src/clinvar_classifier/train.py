@@ -18,7 +18,14 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 from .evaluate import metrics, single_feature_baselines, subgroup_report
-from .features import FEATURE_CONTRACT, FEATURES_V2, make_features
+from .features import (
+    CONTRACT_V2,
+    CONTRACT_V3,
+    FEATURE_CONTRACT,
+    FEATURES,
+    in_v3_scope,
+    make_features,
+)
 from .inference import sigmoid
 from .io import sha256, utc_now, write_json, write_parquet
 from .plots import development_eda, evaluation_figures, shap_summary
@@ -38,13 +45,53 @@ def environment():
     }
 
 
+V3_CLEAN = [
+    "esm1b",
+    "sift4g",
+    "provean",
+    "gerp_91way",
+    "phylop_100way",
+    "phylop_470way",
+    "phastcons_100way",
+]
+ABLATIONS = {
+    CONTRACT_V2: {
+        "XGBoost CADD only": ["cadd_phred"],
+        "XGBoost AF only (explicit missingness)": ["gnomad_af_log", "gnomad_af_missing"],
+        "XGBoost CADD + AF": ["cadd_phred", "gnomad_af_log", "gnomad_af_missing"],
+    },
+    CONTRACT_V3: {
+        "XGBoost CADD only": ["cadd_phred"],
+        "XGBoost CADD + phyloP (no AF)": ["cadd_phred", "phylop_100way"],
+        "XGBoost label-free scores only (S2)": V3_CLEAN,
+        "XGBoost S2 + AlphaMissense": V3_CLEAN + ["alphamissense"],
+    },
+}
+SCOPE = {
+    CONTRACT_V2: "2+ review-status GRCh38 SNVs with CADD/phyloP; special penetrance/risk labels excluded; no inferred clinical classification",
+    CONTRACT_V3: "2+ review-status GRCh38 dbNSFP missense SNVs with CADD/phyloP; population frequency not used as a feature; special penetrance/risk labels excluded; no inferred clinical classification",
+}
+
+
 def train_run(
-    dataset: pd.DataFrame, output: Path, provenance: dict, seed=42, iterations=12, folds=5
+    dataset: pd.DataFrame,
+    output: Path,
+    provenance: dict,
+    seed=42,
+    iterations=12,
+    folds=5,
+    contract=FEATURE_CONTRACT,
 ):
     output = Path(output)
     if (output / "manifest.json").exists():
         raise ValidationError("Completed runs are immutable; choose a new output directory.")
+    if contract not in FEATURES:
+        raise ValidationError(f"Unknown feature contract: {contract}")
     labeled = dataset[dataset.label.notna()].copy()
+    scope_counts = {"labeled_rows": len(labeled)}
+    if contract == CONTRACT_V3:
+        labeled = labeled[in_v3_scope(labeled)].copy()
+        scope_counts["in_scope_missense_rows"] = len(labeled)
     partitioned = make_splits(labeled, seed)
     write_parquet(
         output / "split_manifest.parquet",
@@ -59,6 +106,7 @@ def train_run(
             "cv_folds": folds,
             "search_iterations": iterations,
             "model_family": "predeclared XGBoost",
+            "feature_contract": contract,
             "selection_data": "fit partition only",
             "calibration_data": "calibration partition only",
             "test_partitions": ["variant_test", "gene_test"],
@@ -67,8 +115,8 @@ def train_run(
     )
     fit = partitioned[partitioned.split == "fit"].copy()
     calibration = partitioned[partitioned.split == "calibration"].copy()
-    development_eda(fit, output)
-    X, y = make_features(fit), fit.label.astype(int)
+    development_eda(fit, output, contract)
+    X, y = make_features(fit, contract), fit.label.astype(int)
     cv = list(
         StratifiedGroupKFold(n_splits=folds, shuffle=True, random_state=seed).split(
             X, y, groups=fit.gene_group
@@ -127,14 +175,27 @@ def train_run(
             {"model": name, "fold": i + 1, "roc_auc": float(score)}
             for i, score in enumerate(scores)
         )
-    for name, columns in {
-        "XGBoost CADD only": ["cadd_phred"],
-        "XGBoost AF only (explicit missingness)": ["gnomad_af_log", "gnomad_af_missing"],
-        "XGBoost CADD + AF": ["cadd_phred", "gnomad_af_log", "gnomad_af_missing"],
-    }.items():
+    ablation_frame = X
+    if contract == CONTRACT_V3:
+        # Reference only: shows the circular frequency contribution; never selectable.
+        af = make_features(fit, CONTRACT_V2)[["gnomad_af_log", "gnomad_af_missing"]]
+        ablation_frame = pd.concat([X, af], axis=1)
+    ablations = dict(ABLATIONS[contract])
+    if contract == CONTRACT_V3:
+        ablations["Reference only, not selectable: + gnomAD AF (circular)"] = list(X.columns) + [
+            "gnomad_af_log",
+            "gnomad_af_missing",
+        ]
+    for name, columns in ablations.items():
         LOGGER.info("Development ablation: %s", name)
         scores = cross_val_score(
-            clone(estimator), X[columns], y, cv=cv, scoring="roc_auc", n_jobs=2, error_score="raise"
+            clone(estimator),
+            ablation_frame[columns],
+            y,
+            cv=cv,
+            scoring="roc_auc",
+            n_jobs=2,
+            error_score="raise",
         )
         records.extend(
             {"model": name, "fold": i + 1, "roc_auc": float(score)}
@@ -173,7 +234,7 @@ def train_run(
     write_parquet(output / "cv_scores.parquet", pd.DataFrame(records))
     model.save_model(output / "model.ubj")
     # Calibration uses independent rows, no class weighting and no test-set decisions.
-    margins = model.predict(make_features(calibration), output_margin=True)
+    margins = model.predict(make_features(calibration, contract), output_margin=True)
     calibrator = LogisticRegression(C=1e6, solver="lbfgs", max_iter=1000, random_state=seed)
     calibrator.fit(margins.reshape(-1, 1), calibration.label.astype(int))
     slope, intercept = float(calibrator.coef_[0, 0]), float(calibrator.intercept_[0])
@@ -203,6 +264,8 @@ def train_run(
         },
         "test": {},
         "calibration": calibration_spec,
+        "feature_contract": contract,
+        "scope_counts": scope_counts,
     }
     predictions = []
     # Tests are first accessed for evaluation after all fitting/selection/calibration completes.
@@ -211,8 +274,9 @@ def train_run(
     write_json(output / "protocol.json", protocol)
     for name in ["variant_test", "gene_test"]:
         test = partitioned[partitioned.split == name].copy()
-        raw = model.predict_proba(make_features(test))[:, 1]
-        score = sigmoid(slope * model.predict(make_features(test), output_margin=True) + intercept)
+        test_features = make_features(test, contract)
+        raw = model.predict_proba(test_features)[:, 1]
+        score = sigmoid(slope * model.predict(test_features, output_margin=True) + intercept)
         report["test"][name] = {
             "calibrated_score": metrics(test.label, score, bootstrap=500, seed=seed),
             "raw_score": metrics(test.label, raw),
@@ -220,30 +284,18 @@ def train_run(
             "single_feature_baselines": single_feature_baselines(test),
         }
         test["model_score"], test["raw_model_score"] = score, raw
+        identity = ["hgvs_id", "AlleleID", "VariationID", "GeneSymbol", "gene_group", "Name"]
+        inputs = [c for c in FEATURES[contract] if c in test] + ["gnomad_af", "af_available"]
+        if "consequence" in test:
+            inputs.append("consequence")
+        inputs = list(dict.fromkeys(c for c in inputs if c in test))
         predictions.append(
-            test[
-                [
-                    "hgvs_id",
-                    "AlleleID",
-                    "VariationID",
-                    "GeneSymbol",
-                    "gene_group",
-                    "Name",
-                    "label",
-                    "split",
-                    "cadd_phred",
-                    "phylop_100way",
-                    "gnomad_af",
-                    "af_available",
-                    "model_score",
-                    "raw_model_score",
-                ]
-            ]
+            test[identity + ["label", "split"] + inputs + ["model_score", "raw_model_score"]]
         )
     write_parquet(output / "test_predictions.parquet", pd.concat(predictions, ignore_index=True))
     write_json(output / "metrics.json", report)
     evaluation_figures(output)
-    shap_summary(model, fit, output, seed)
+    shap_summary(model, fit, output, seed, contract)
     protocol = json.loads((output / "protocol.json").read_text(encoding="utf-8"))
     protocol["test_evaluation_completed_at"] = utc_now()
     write_json(output / "protocol.json", protocol)
@@ -259,15 +311,16 @@ def train_run(
         "run_id": output.name,
         "created_at": utc_now(),
         "assembly": "GRCh38",
-        "feature_contract": FEATURE_CONTRACT,
-        "features": FEATURES_V2,
+        "feature_contract": contract,
+        "features": FEATURES[contract],
         "calibration": calibration_spec,
         "thresholds": {
             "low": 0.1,
             "high": 0.9,
             "semantics": "display-only prioritization bands; not ACMG classes",
         },
-        "scope": "2+ review-status GRCh38 SNVs with CADD/phyloP; special penetrance/risk labels excluded; no inferred clinical classification",
+        "scope": SCOPE[contract],
+        "scope_counts": scope_counts,
         "validation_status": "internal variant and connected-gene holdouts; external validation reported separately",
         "n_fit": len(fit),
         "n_calibration": len(calibration),

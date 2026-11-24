@@ -17,19 +17,19 @@ def main():
 
     add(
         "markdown",
-        "# ClinVar SNV araştırma akışı — v2\n\nBu notebook çevrimdışı inceleme katmanıdır. Veri indirme, anotasyon ve eğitim işlemleri ortak `clinvar_classifier` paketinin CLI komutlarıyla yapılır. Eski çalışmadan kalan hücre çıktıları güncel sonuç gibi gösterilmez. Model skoru klinik patojenite olasılığı değildir.\n",
+        "# ClinVar missense araştırma akışı — v3\n\nBu notebook çevrimdışı inceleme katmanıdır. Veri indirme, anotasyon ve eğitim işlemleri ortak `clinvar_classifier` paketinin CLI komutlarıyla yapılır. Eski çalışmadan kalan hücre çıktıları güncel sonuç gibi gösterilmez. Model skoru klinik patojenite olasılığı değildir.\n\nv3 (S4) yalnızca dbNSFP missense SNV'leri skorlar ve popülasyon frekansını (gnomAD AF) **özellik olarak kullanmaz**: ACMG/AMP frekans kriterleri (BA1/BS1/PM2) ClinVar etiketlerinin bir parçası olduğundan AF döngüsel bir sinyal taşır. Kanıtlar `experiments/CIRCULARITY_RESULTS.md` içindedir.\n",
     )
     add(
         "code",
-        "from pathlib import Path\nimport json\nimport sys\nimport pandas as pd\n\nROOT = next(p for p in [Path.cwd(), *Path.cwd().parents] if (p / 'pyproject.toml').exists())\nsys.path.insert(0, str(ROOT / 'src'))\nfrom clinvar_classifier.data import map_label\nfrom clinvar_classifier.features import make_features\nfrom clinvar_classifier.inference import Predictor\nBUNDLE = ROOT / 'artifacts' / 'research-v2'\n",
+        "from pathlib import Path\nimport json\nimport sys\nimport pandas as pd\n\nROOT = next(p for p in [Path.cwd(), *Path.cwd().parents] if (p / 'pyproject.toml').exists())\nsys.path.insert(0, str(ROOT / 'src'))\nfrom clinvar_classifier.data import map_label\nfrom clinvar_classifier.features import CONTRACT_V2, make_features\nfrom clinvar_classifier.inference import Predictor\nBUNDLE = ROOT / 'artifacts' / 'research-v3'\n",
     )
     add(
         "markdown",
-        "## Açık etiket ve eksiklik politikası\n\nP/LP ve B/LB etiketleri açık izin listesiyle eşlenir. Düşük penetrans, risk alleli ve karışık/çelişkili etiketler ikili hedefe dahil edilmez. Eksik AF ve gözlenen sıfır ayrı tutulur.\n",
+        "## Açık etiket ve eksiklik politikası\n\nP/LP ve B/LB etiketleri açık izin listesiyle eşlenir. Düşük penetrans, risk alleli ve karışık/çelişkili etiketler ikili hedefe dahil edilmez. v2 sözleşmesinde eksik AF ve gözlenen sıfır ayrı tutulur; v3 sözleşmesinde AF hiç kullanılmaz ve boş isteğe bağlı skorlar bilinmiyor olarak kalır.\n",
     )
     add(
         "code",
-        "labels = ['Pathogenic', 'Likely pathogenic', 'Pathogenic/Likely pathogenic', 'Benign', 'Likely benign', 'Benign/Likely benign', 'Uncertain significance', 'Pathogenic, low penetrance']\nprint(pd.DataFrame({'ClinicalSignificance': labels, 'label': [map_label(x) for x in labels]}).to_string(index=False))\nraw = pd.DataFrame({'cadd_phred': [20.,20.], 'phylop_100way': [2.,2.], 'gnomad_af': [None,0.], 'af_available': [False,True]})\nprint(make_features(raw))\n",
+        "labels = ['Pathogenic', 'Likely pathogenic', 'Pathogenic/Likely pathogenic', 'Benign', 'Likely benign', 'Benign/Likely benign', 'Uncertain significance', 'Pathogenic, low penetrance']\nprint(pd.DataFrame({'ClinicalSignificance': labels, 'label': [map_label(x) for x in labels]}).to_string(index=False))\nraw = pd.DataFrame({'cadd_phred': [20.,20.], 'phylop_100way': [2.,2.], 'gnomad_af': [None,0.], 'af_available': [False,True]})\nprint(make_features(raw, CONTRACT_V2))\nv3 = pd.DataFrame([{'cadd_phred': 25., 'phylop_100way': 2., 'esm1b': 0.9, 'alphamissense': None, 'consequence': 'missense'}])\nprint(make_features(v3))\n",
     )
     add(
         "markdown",
@@ -37,7 +37,7 @@ def main():
     )
     add(
         "code",
-        "manifest = json.loads((BUNDLE / 'manifest.json').read_text(encoding='utf-8')) if (BUNDLE / 'manifest.json').exists() else None\nif manifest:\n    print({k: manifest.get(k) for k in ['run_id','n_fit','n_calibration','feature_contract','validation_status']})\n    print('Training snapshot SHA256:', manifest.get('provenance', {}).get('cohort', {}).get('snapshot_sha256'))\nelse:\n    print('No research-v2 bundle yet. Run the documented training commands first; no placeholder performance is displayed.')\n",
+        "manifest = json.loads((BUNDLE / 'manifest.json').read_text(encoding='utf-8')) if (BUNDLE / 'manifest.json').exists() else None\nif manifest:\n    print({k: manifest.get(k) for k in ['run_id','n_fit','n_calibration','feature_contract','validation_status']})\n    print('Training snapshot SHA256:', manifest.get('provenance', {}).get('cohort', {}).get('snapshot_sha256'))\nelse:\n    print('No research-v3 bundle yet. Run the documented training commands first; no placeholder performance is displayed.')\n",
     )
     add(
         "markdown",
@@ -61,7 +61,7 @@ def main():
     )
     add(
         "code",
-        "if manifest:\n    predictor = Predictor(BUNDLE)\n    example = pd.DataFrame([{'cadd_phred':25.,'phylop_100way':2.,'gnomad_af':None,'af_available':False}])\n    print(predictor.predict(example))\n    features, values, base = predictor.explain(example)\n    print(pd.Series(values[0], index=features.columns, name='Tree SHAP raw-margin contribution'))\n    print('Base margin:', base[0])\n",
+        "if manifest:\n    predictor = Predictor(BUNDLE)\n    if manifest['feature_contract'] == 'missense-noaf-v3':\n        example = pd.DataFrame([{'cadd_phred':25.,'phylop_100way':2.,'esm1b':0.9,'alphamissense':0.8,'sift4g':0.9,'provean':0.9}])\n    else:\n        example = pd.DataFrame([{'cadd_phred':25.,'phylop_100way':2.,'gnomad_af':None,'af_available':False}])\n    print(predictor.predict(example))\n    features, values, base = predictor.explain(example)\n    print(pd.Series(values[0], index=features.columns, name='Tree SHAP raw-margin contribution'))\n    print('Base margin:', base[0])\n",
     )
     notebook = {
         "cells": cells,
@@ -73,7 +73,7 @@ def main():
         "nbformat_minor": 5,
     }
     for i, cell in enumerate(cells):
-        cell["id"] = f"research-v2-{i + 1}"
+        cell["id"] = f"research-v3-{i + 1}"
     (ROOT / "clinvar.ipynb").write_text(
         json.dumps(notebook, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
     )

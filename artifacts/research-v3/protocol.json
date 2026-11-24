@@ -1,0 +1,15 @@
+{
+  "seed": 42,
+  "cv_folds": 5,
+  "search_iterations": 12,
+  "model_family": "predeclared XGBoost",
+  "feature_contract": "missense-noaf-v3",
+  "selection_data": "fit partition only",
+  "calibration_data": "calibration partition only",
+  "test_partitions": [
+    "variant_test",
+    "gene_test"
+  ],
+  "test_opened_at": "2026-11-24T11:45:47.718770+00:00",
+  "test_evaluation_completed_at": "2026-11-24T11:45:52.504083+00:00"
+}

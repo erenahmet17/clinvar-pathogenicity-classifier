@@ -10,9 +10,18 @@ import pandas as pd
 from .annotation import AnnotationClient
 from .data import merge_annotations, read_cohort
 from .evaluate import external_cohort, metrics, subgroup_report, validate_temporal_sources
+from .features import CONTRACT_V3, FEATURE_CONTRACT, FEATURES, in_v3_scope
 from .inference import Predictor
 from .io import sha256, write_json, write_parquet
 from .train import train_run
+
+
+def scope_filter(frame, predictor):
+    """Rows the bundle's contract can score, and the count left out of that scope."""
+    if predictor.manifest["feature_contract"] != CONTRACT_V3:
+        return frame, 0
+    mask = in_v3_scope(frame)
+    return frame.loc[mask].reset_index(drop=True), int((~mask).sum())
 
 
 def score_vus(dataset, bundle):
@@ -21,6 +30,7 @@ def score_vus(dataset, bundle):
     excluded = frame.hgvs_id.isin(predictor.manifest.get("known_scope_exclusions", {}))
     excluded_count = int(excluded.sum())
     frame = frame.loc[~excluded].reset_index(drop=True)
+    frame, outside_contract = scope_filter(frame, predictor)
     if frame.empty:
         raise ValueError("No in-scope VUS rows available for scoring.")
     output = predictor.predict(frame)
@@ -40,6 +50,7 @@ def score_vus(dataset, bundle):
                 "gnomad_af",
                 "af_available",
             ]
+            + [c for c in ["consequence"] if c in frame]
         ],
     )
     manifest = predictor.manifest
@@ -49,6 +60,7 @@ def score_vus(dataset, bundle):
         "by_direction": frame.direction.value_counts().to_dict(),
         "unknown_af": int(frame.gnomad_af.isna().sum()),
         "known_out_of_scope_not_scored": excluded_count,
+        "outside_feature_contract_not_scored": outside_contract,
     }
     write_json(Path(bundle) / "manifest.json", manifest)
     return manifest["vus_counts"]
@@ -72,6 +84,7 @@ def main(argv=None):
     train.add_argument("out", type=Path)
     train.add_argument("--iterations", type=int, default=12)
     train.add_argument("--folds", type=int, default=5)
+    train.add_argument("--contract", default=FEATURE_CONTRACT, choices=sorted(FEATURES))
     score = sub.add_parser("score-vus")
     score.add_argument("dataset", type=Path)
     score.add_argument("bundle", type=Path)
@@ -115,7 +128,12 @@ def main(argv=None):
         if sha256(args.dataset) != provenance["dataset_sha256"]:
             raise ValueError("Dataset hash differs from provenance.")
         report = train_run(
-            dataset, args.out, provenance, iterations=args.iterations, folds=args.folds
+            dataset,
+            args.out,
+            provenance,
+            iterations=args.iterations,
+            folds=args.folds,
+            contract=args.contract,
         )
         print(
             json.dumps(
@@ -163,12 +181,13 @@ def main(argv=None):
         for name, frame in [("new_labeled_variants", new), ("reclassified_vus", reclassified)]:
             outside = frame.hgvs_id.isin(predictor.manifest.get("known_scope_exclusions", {}))
             excluded_count = int(outside.sum())
-            frame = frame.loc[~outside]
+            frame, outside_contract = scope_filter(frame.loc[~outside], predictor)
             if frame.empty:
                 report["groups"][name] = {
                     "n": 0,
                     "roc_auc": None,
                     "known_out_of_scope_not_scored": excluded_count,
+                    "outside_feature_contract_not_scored": outside_contract,
                 }
                 continue
             frame = frame.copy().reset_index(drop=True)
@@ -177,6 +196,7 @@ def main(argv=None):
             frame["evaluation_group"] = name
             report["groups"][name] = {
                 "known_out_of_scope_not_scored": excluded_count,
+                "outside_feature_contract_not_scored": outside_contract,
                 **metrics(frame.label, frame.model_score, bootstrap=500),
                 "subgroups": subgroup_report(frame, frame.model_score),
             }
