@@ -4,7 +4,7 @@ Models S1-S5 from v3_features_eval.py are retrained on July-2026 missense fit ro
 the external variants removed, under two exclusion designs:
   variant-disjoint : drop fit/calibration rows whose identity is in erepo or BAP1 SGE
   gene-disjoint    : additionally drop every row in a gene group that contains an
-                     external gene (140 erepo genes + BAP1)
+                     external gene (131 evaluated erepo missense genes + BAP1 = 132)
 Evaluation:
   erepo missense P/LP vs B/LB, all / no computational code (PP3, BP4, BP7) /
   no computational and no frequency code (BA1, BS1, PM2); each also restricted to rare

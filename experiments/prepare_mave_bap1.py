@@ -11,7 +11,6 @@ kept for threshold-free (Spearman) evaluation.
 """
 
 import json
-import re
 import sys
 from pathlib import Path
 
@@ -40,8 +39,13 @@ def cds_map():
         for g in rng if strand == 1 else reversed(rng):
             if lo <= g <= hi:
                 positions.append(g)
-    meta = {"transcript": t["id"] + "." + str(t["version"]), "assembly": t["assembly_name"],
-            "chrom": chrom, "strand": strand, "cds_length": len(positions)}
+    meta = {
+        "transcript": t["id"] + "." + str(t["version"]),
+        "assembly": t["assembly_name"],
+        "chrom": chrom,
+        "strand": strand,
+        "cds_length": len(positions),
+    }
     return chrom, strand, positions, meta
 
 
@@ -58,8 +62,13 @@ def main(src, out):
         g = cds[int(cpos) - 1]
         if strand == -1:
             ref, alt = ref.translate(COMP), alt.translate(COMP)
-        rows.append({"hgvs_id": f"chr{chrom}:g.{g}{ref}>{alt}", "c_pos": int(cpos),
-                     "mave_score": float(score)})
+        rows.append(
+            {
+                "hgvs_id": f"chr{chrom}:g.{g}{ref}>{alt}",
+                "c_pos": int(cpos),
+                "mave_score": float(score),
+            }
+        )
     f = pd.DataFrame(rows)
     f["GeneSymbol"] = "BAP1"
     f["label"] = pd.NA

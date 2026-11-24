@@ -22,7 +22,7 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.model_selection import RandomizedSearchCV, StratifiedGroupKFold
 
 from clinvar_classifier.evaluate import external_cohort
-from clinvar_classifier.features import make_features
+from clinvar_classifier.features import CONTRACT_V2, make_features
 from clinvar_classifier.inference import sigmoid
 from clinvar_classifier.split import gene_groups, make_splits
 
@@ -57,7 +57,7 @@ SINGLE = [
 
 
 def matrix(frame):
-    af = make_features(frame)[["gnomad_af_log", "gnomad_af_missing"]]
+    af = make_features(frame, CONTRACT_V2)[["gnomad_af_log", "gnomad_af_missing"]]
     return pd.concat([frame.drop(columns=af.columns, errors="ignore"), af], axis=1)
 
 
@@ -151,8 +151,7 @@ def run(july, october, scores_path, output, seed=42):
         scores[key] = {}
         for name, frame in evals.items():
             s = sigmoid(
-                lr.coef_[0, 0] * model.predict(frame[cols], output_margin=True)
-                + lr.intercept_[0]
+                lr.coef_[0, 0] * model.predict(frame[cols], output_margin=True) + lr.intercept_[0]
             )
             scores[key][name] = s
             y = frame.label.astype(int)

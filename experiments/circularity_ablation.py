@@ -30,7 +30,7 @@ from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import RandomizedSearchCV, StratifiedGroupKFold
 
 from clinvar_classifier.evaluate import external_cohort, metrics, subgroup_report
-from clinvar_classifier.features import make_features
+from clinvar_classifier.features import CONTRACT_V2, make_features
 from clinvar_classifier.inference import sigmoid
 from clinvar_classifier.split import make_splits
 
@@ -76,7 +76,7 @@ def run(earlier_path: Path, later_path: Path, output: Path, seed=42, iterations=
     part = make_splits(labeled, seed)
     fit = part[part.split == "fit"]
     cal = part[part.split == "calibration"]
-    X_fit_all, y_fit = make_features(fit), fit.label.astype(int)
+    X_fit_all, y_fit = make_features(fit, CONTRACT_V2), fit.label.astype(int)
     cv = list(
         StratifiedGroupKFold(n_splits=folds, shuffle=True, random_state=seed).split(
             X_fit_all, y_fit, groups=fit.gene_group
@@ -89,8 +89,8 @@ def run(earlier_path: Path, later_path: Path, output: Path, seed=42, iterations=
         "ext_new_labeled": new.reset_index(drop=True),
         "ext_reclassified_vus": reclassified.reset_index(drop=True),
     }
-    feats = {name: make_features(frame) for name, frame in evals.items()}
-    X_cal_all = make_features(cal)
+    feats = {name: make_features(frame, CONTRACT_V2) for name, frame in evals.items()}
+    X_cal_all = make_features(cal, CONTRACT_V2)
 
     report, scores = {}, {}
     for set_name, cols in FEATURE_SETS.items():

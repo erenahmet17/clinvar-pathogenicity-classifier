@@ -79,7 +79,9 @@ def main(src, cache_dir, out):
             v = get(db, "phylop.100way_vertebrate.score")
             row["phylop_100way"] = float(v) if isinstance(v, (int, float)) else None
             genes = db.get("genename")
-            row["dbnsfp_gene"] = ";".join(sorted(set(genes if isinstance(genes, list) else [genes])))
+            row["dbnsfp_gene"] = ";".join(
+                sorted(set(genes if isinstance(genes, list) else [genes]))
+            )
             aa = db.get("aa") or {}
             aa = aa if isinstance(aa, list) else [aa]
             for key in ["ref", "alt", "pos"]:

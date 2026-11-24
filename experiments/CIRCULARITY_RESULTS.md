@@ -176,7 +176,7 @@ Scriptler: `experiments/prepare_erepo.py`, `experiments/prepare_mave_bap1.py`, `
 
 - erepo varyantlarının 5,480'i (%70) Temmuz eğitim kohortunda da vardı. Modeller dış setler çıkarılarak yeniden eğitildi:
   - **varyant ayrık:** erepo ve BAP1 kimlikleri fit/kalibrasyondan çıkarıldı; fit 31,571, kalibrasyon 7,841 satır.
-  - **gen ayrık:** buna ek olarak 140 erepo geni ve BAP1'i içeren tüm gen grupları çıkarıldı; fit 27,405, kalibrasyon 6,807 satır.
+  - **gen ayrık:** buna ek olarak değerlendirilen 131 erepo missense geni ve BAP1'i (toplam 132 gen) içeren tüm gen grupları çıkarıldı (fit satırlarında −%13); fit 27,405, kalibrasyon 6,807 satır.
 - Diğer her şey Adım 2 ile aynı (S1–S5 özellik setleri, missense eğitimi, gen gruplu CV, ayrı kalibrasyon).
 
 ## ROC-AUC [%95 GA], gen ayrık tasarım

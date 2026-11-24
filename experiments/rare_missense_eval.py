@@ -29,7 +29,7 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.model_selection import RandomizedSearchCV, StratifiedGroupKFold
 
 from clinvar_classifier.evaluate import external_cohort
-from clinvar_classifier.features import make_features
+from clinvar_classifier.features import CONTRACT_V2, make_features
 from clinvar_classifier.inference import sigmoid
 from clinvar_classifier.split import gene_groups, make_splits
 
@@ -80,7 +80,7 @@ def paired_delta(y, a, b, n=500, seed=42):
 
 
 def fit_calibrated(fit, cal, cols, seed=42, iterations=12, folds=5):
-    X, y = make_features(fit)[cols], fit.label.astype(int)
+    X, y = make_features(fit, CONTRACT_V2)[cols], fit.label.astype(int)
     cv = list(
         StratifiedGroupKFold(n_splits=folds, shuffle=True, random_state=seed).split(
             X, y, groups=fit.gene_group
@@ -99,7 +99,7 @@ def fit_calibrated(fit, cal, cols, seed=42, iterations=12, folds=5):
     )
     search.fit(X, y)
     model = search.best_estimator_
-    margins = model.predict(make_features(cal)[cols], output_margin=True)
+    margins = model.predict(make_features(cal, CONTRACT_V2)[cols], output_margin=True)
     calibrator = LogisticRegression(C=1e6, max_iter=1000).fit(
         margins.reshape(-1, 1), cal.label.astype(int)
     )
@@ -107,7 +107,8 @@ def fit_calibrated(fit, cal, cols, seed=42, iterations=12, folds=5):
 
     def predict(frame):
         return sigmoid(
-            slope * model.predict(make_features(frame)[cols], output_margin=True) + intercept
+            slope * model.predict(make_features(frame, CONTRACT_V2)[cols], output_margin=True)
+            + intercept
         )
 
     return predict, float(search.best_score_), search.best_params_
