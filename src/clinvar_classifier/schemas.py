@@ -58,6 +58,15 @@ class Annotation:
     allele_number: float | None = None
     annotation_status: str = "ok"
     annotation_error: str | None = None
+    # v3: low-circularity dbNSFP predictors and protein consequence (optional per variant).
+    esm1b: float | None = None
+    alphamissense: float | None = None
+    sift4g: float | None = None
+    provean: float | None = None
+    gerp_91way: float | None = None
+    phylop_470way: float | None = None
+    phastcons_100way: float | None = None
+    consequence: str | None = None
 
     def to_dict(self):
         return asdict(self)

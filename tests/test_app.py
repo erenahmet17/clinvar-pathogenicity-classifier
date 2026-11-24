@@ -36,3 +36,20 @@ def test_missing_bundle_has_actionable_message(monkeypatch, tmp_path):
     app = AppTest.from_file(str(APP), default_timeout=30).run()
     assert not app.exception
     assert "Model bundle unavailable" in app.error[0].value
+
+
+@pytest.mark.integration
+def test_app_v3_manual_input_scores_without_frequency(monkeypatch, tmp_path, small_dataset):
+    from clinvar_classifier.train import train_run
+
+    train_run(small_dataset, tmp_path, {"test_fixture": True}, iterations=1, folds=2)
+    monkeypatch.setenv("CLINVAR_BUNDLE_DIR", str(tmp_path))
+    app = AppTest.from_file(str(APP), default_timeout=60).run()
+    assert not app.exception
+    assert not app.checkbox  # no AF toggle in the v3 form
+    assert len(app.number_input) == 9
+    app.button[0].click().run()
+    assert not app.exception
+    assert any(metric.label == "Model prioritization score" for metric in app.metric)
+    app.radio[0].set_value("Performance").run()
+    assert not app.exception

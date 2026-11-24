@@ -18,7 +18,36 @@ from .schemas import Annotation, ValidationError, finite_number, normalize_hgvs
 
 LOGGER = logging.getLogger(__name__)
 BASE_URL = "https://myvariant.info/v1"
-FIELDS = "dbnsfp.cadd.phred,dbnsfp.phylop.100way_vertebrate,gnomad_genome.af.af,gnomad_genome.ac.ac,gnomad_genome.an.an"
+FIELDS = ",".join(
+    [
+        "dbnsfp.cadd.phred",
+        "dbnsfp.phylop.100way_vertebrate",
+        "gnomad_genome.af.af",
+        "gnomad_genome.ac.ac",
+        "gnomad_genome.an.an",
+        # v3 low-circularity predictors (no ClinVar/HGMD label training) and protein change.
+        "dbnsfp.esm1b.rankscore",
+        "dbnsfp.alphamissense.rankscore",
+        "dbnsfp.sift4g.converted_rankscore",
+        "dbnsfp.provean.converted_rankscore",
+        "dbnsfp.gerp.91_mammals.score",
+        "dbnsfp.phylop.470way_mammalian.score",
+        "dbnsfp.phastcons.100way_vertebrate.score",
+        "dbnsfp.aa.ref",
+        "dbnsfp.aa.alt",
+    ]
+)
+# name: (dbNSFP path, lower bound, upper bound). Missing or transcript-ambiguous -> None.
+OPTIONAL_SCORES = {
+    "esm1b": (("esm1b", "rankscore"), 0, 1),
+    "alphamissense": (("alphamissense", "rankscore"), 0, 1),
+    "sift4g": (("sift4g", "converted_rankscore"), 0, 1),
+    "provean": (("provean", "converted_rankscore"), 0, 1),
+    "gerp_91way": (("gerp", "91_mammals", "score"), -20, 10),
+    "phylop_470way": (("phylop", "470way_mammalian", "score"), -20, 15),
+    "phastcons_100way": (("phastcons", "100way_vertebrate", "score"), 0, 1),
+}
+STOP = {"X", "*"}
 
 
 class AnnotationError(RuntimeError):
@@ -54,6 +83,43 @@ def nested(value, *keys):
     return value
 
 
+def optional_score(dbnsfp, path, minimum, maximum):
+    """Single finite value or None. Distinct per-transcript values are left unknown."""
+    value = dbnsfp
+    for key in path:
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    values = value if isinstance(value, list) else [value]
+    present = {v for v in values if v is not None and not isinstance(v, (dict, list))}
+    if len(present) != 1:
+        return None
+    return finite_number(next(iter(present)), "/".join(path), minimum=minimum, maximum=maximum)
+
+
+def protein_consequence(dbnsfp) -> str | None:
+    """dbNSFP amino-acid change summarized across records; mixed changes are 'ambiguous'."""
+    records = dbnsfp.get("aa") if isinstance(dbnsfp, dict) else None
+    if records is None:
+        return None
+    refs, alts = set(), set()
+    for record in records if isinstance(records, list) else [records]:
+        if not isinstance(record, dict):
+            continue
+        for key, target in [("ref", refs), ("alt", alts)]:
+            value = record.get(key)
+            target.update(v for v in (value if isinstance(value, list) else [value]) if v)
+    if not refs or not alts:
+        return None
+    if refs & STOP:
+        return "stop_lost" if not alts & STOP else "ambiguous"
+    if alts & STOP:
+        return "stop_gained" if alts <= STOP else "ambiguous"
+    if alts == refs and len(refs) == 1:
+        return "synonymous"
+    return "missense"
+
+
 def parse_annotation(payload: dict, hgvs_id: str | None = None) -> Annotation:
     if not isinstance(payload, dict):
         raise ValidationError("Expected one annotation object.")
@@ -77,7 +143,23 @@ def parse_annotation(payload: dict, hgvs_id: str | None = None) -> Annotation:
     if ac is not None and an is not None and ac > an:
         raise ValidationError("Allele count exceeds allele number.")
     status = "ok" if cadd is not None and phylop is not None else "missing_required_features"
-    return Annotation(identity, cadd, phylop, af, af is not None, ac, an, status)
+    dbnsfp = payload.get("dbnsfp")
+    extra = {
+        name: optional_score(dbnsfp, path, low, high)
+        for name, (path, low, high) in OPTIONAL_SCORES.items()
+    }
+    return Annotation(
+        identity,
+        cadd,
+        phylop,
+        af,
+        af is not None,
+        ac,
+        an,
+        status,
+        consequence=protein_consequence(dbnsfp),
+        **extra,
+    )
 
 
 class AnnotationClient:

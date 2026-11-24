@@ -12,13 +12,17 @@ import pandas as pd
 import xgboost as xgb
 from sklearn.metrics import roc_curve
 
-from .features import make_features
+from .features import CONTRACT_V2, FEATURE_CONTRACT, FEATURES, make_features
 from .io import write_json
 
 
-def development_eda(frame: pd.DataFrame, output: Path):
+def development_eda(frame: pd.DataFrame, output: Path, contract=CONTRACT_V2):
     fig, axes = plt.subplots(2, 2, figsize=(11, 7))
-    fields = ["cadd_phred", "phylop_100way", "gnomad_af"]
+    fields = (
+        ["cadd_phred", "phylop_100way", "gnomad_af"]
+        if contract == CONTRACT_V2
+        else ["cadd_phred", "esm1b", "alphamissense"]
+    )
     for ax, field in zip(axes.flat, fields):
         for label, color, name in [(0, "#4477aa", "B/LB"), (1, "#bb5544", "P/LP")]:
             values = frame.loc[frame.label == label, field].dropna()
@@ -40,6 +44,15 @@ def development_eda(frame: pd.DataFrame, output: Path):
     plt.close(fig)
     stats = {
         "partition": "fit only",
+        "feature_contract": contract,
+        "feature_availability_by_label": {
+            name: {
+                str(label): float(frame.loc[frame.label == label, name].notna().mean())
+                for label in [0, 1]
+            }
+            for name in FEATURES[contract]
+            if name in frame
+        },
         "n": len(frame),
         "unknown_af_fraction_by_label": dict(zip(["B/LB", "P/LP"], missing)),
         "correlation_pairwise_observed": frame[fields].corr().replace({np.nan: None}).to_dict(),
@@ -90,9 +103,9 @@ def evaluation_figures(output: Path):
     plt.close(fig)
 
 
-def shap_summary(model, fit: pd.DataFrame, output: Path, seed=42):
+def shap_summary(model, fit: pd.DataFrame, output: Path, seed=42, contract=FEATURE_CONTRACT):
     sample = fit.sample(min(1000, len(fit)), random_state=seed)
-    features = make_features(sample)
+    features = make_features(sample, contract)
     matrix = xgb.DMatrix(features)
     contribution = model.get_booster().predict(matrix, pred_contribs=True)
     margin = model.predict(features, output_margin=True)

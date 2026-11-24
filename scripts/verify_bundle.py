@@ -1,5 +1,7 @@
 """Verify real bundle outputs, split/fold identity and default Streamlit flows."""
 
+import os
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -11,7 +13,7 @@ from clinvar_classifier.io import sha256, write_json
 from clinvar_classifier.split import assert_disjoint
 
 ROOT = Path(__file__).resolve().parents[1]
-BUNDLE = ROOT / "artifacts" / "research-v2"
+BUNDLE = Path(sys.argv[1] if len(sys.argv) > 1 else ROOT / "artifacts" / "research-v3").resolve()
 
 
 def main():
@@ -37,6 +39,7 @@ def main():
             fit[fit.cv_validation_fold != fold],
             gene_disjoint=True,
         )
+    os.environ["CLINVAR_BUNDLE_DIR"] = str(BUNDLE)
     app = AppTest.from_file(str(ROOT / "clinvar_app" / "app.py"), default_timeout=30).run()
     if app.exception:
         raise AssertionError(app.exception)
@@ -58,10 +61,12 @@ def main():
     ):
         raise AssertionError("Expected HFE scope rejection before a network request.")
     write_json(
-        ROOT / "validation_logs" / "bundle_verification.json",
+        ROOT / "validation_logs" / f"bundle_verification_{BUNDLE.name}.json",
         {
+            "bundle": BUNDLE.name,
+            "feature_contract": predictor.manifest["feature_contract"],
             "default_app_pages": "passed",
-            "manual_unknown_af": "passed",
+            "manual_input": "passed",
             "literal_gene_filter": "passed",
             "hfe_scope_rejection": "passed",
             "mandatory_and_optional_checksums": "passed",

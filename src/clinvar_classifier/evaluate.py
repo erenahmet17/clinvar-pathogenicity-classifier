@@ -89,6 +89,8 @@ def subgroup_report(frame: pd.DataFrame, score):
         "af_observed_zero": af.eq(0),
         "af_observed_rare_le_1e_4": af.gt(0) & af.le(1e-4),
         "af_observed_gt_1e_3": af.gt(1e-3),
+        "rare_af_le_1e_4_or_unknown": af.isna() | af.le(1e-4),
+        "af_observed_le_1e_4": af.notna() & af.le(1e-4),
         "stop_gain_name_proxy": name.str.contains(r"p\.[^)]*(?:Ter|\*)", regex=True),
         "splice_name_proxy": name.str.contains(r"c\.[0-9]+[+-][0-9]", regex=True),
     }
@@ -119,11 +121,19 @@ def subgroup_report(frame: pd.DataFrame, score):
 
 def single_feature_baselines(frame: pd.DataFrame):
     result = {}
-    for name, values in [
-        ("cadd", frame.cadd_phred),
-        ("phylop", frame.phylop_100way),
-        ("inverted_observed_af", -frame.gnomad_af),
-    ]:
+    columns = [
+        ("cadd", "cadd_phred", 1),
+        ("phylop", "phylop_100way", 1),
+        ("inverted_observed_af", "gnomad_af", -1),
+        ("esm1b", "esm1b", 1),
+        ("alphamissense", "alphamissense", 1),
+        ("sift4g", "sift4g", 1),
+        ("provean", "provean", 1),
+    ]
+    for name, column, sign in columns:
+        if column not in frame:
+            continue
+        values = sign * frame[column]
         valid = values.notna() & frame.label.notna()
         y = frame.loc[valid, "label"]
         result[name] = {

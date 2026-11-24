@@ -4,7 +4,7 @@ import pytest
 
 from clinvar_classifier.annotation import parse_annotation
 from clinvar_classifier.data import add_identities, deduplicate, map_label, merge_annotations
-from clinvar_classifier.features import make_features, score_direction
+from clinvar_classifier.features import CONTRACT_V2, FEATURES_V3, make_features, score_direction
 from clinvar_classifier.schemas import ValidationError, normalize_hgvs
 from clinvar_classifier.split import assert_disjoint, gene_groups, make_splits
 
@@ -59,7 +59,7 @@ def test_missing_af_and_zero_have_distinct_features():
             "af_available": [False, True],
         }
     )
-    features = make_features(frame)
+    features = make_features(frame, CONTRACT_V2)
     assert np.isnan(features.loc[0, "gnomad_af_log"])
     assert features.loc[0, "gnomad_af_missing"] == 1
     assert features.loc[1, "gnomad_af_log"] == -9
@@ -74,7 +74,7 @@ def test_invalid_feature_values(column, value):
     raw = pd.DataFrame([{"cadd_phred": 20.0, "phylop_100way": 2.0, "gnomad_af": 0.01}])
     raw[column] = value
     with pytest.raises(ValidationError):
-        make_features(raw)
+        make_features(raw, CONTRACT_V2)
 
 
 def test_legacy_contract_does_not_silently_impute_unknown_af():
@@ -189,3 +189,75 @@ def test_reference_and_fractional_positions_validated():
         }
     )
     assert len(add_identities(frame)) == 1
+
+
+def v3_row(**overrides):
+    row = {name: 0.5 for name in FEATURES_V3}
+    row.update({"cadd_phred": 25.0, "phylop_100way": 2.0, "gerp_91way": 3.0})
+    row.update({"phylop_470way": 4.0, "consequence": "missense"})
+    row.update(overrides)
+    return pd.DataFrame([row])
+
+
+def test_v3_features_exclude_population_frequency():
+    features = make_features(v3_row(gnomad_af=0.2, af_available=True))
+    assert list(features.columns) == FEATURES_V3
+    assert not any("af" in name.split("_") for name in features.columns)
+
+
+def test_v3_optional_scores_stay_unknown():
+    features = make_features(v3_row(esm1b=None, alphamissense=np.nan))
+    assert features[["esm1b", "alphamissense"]].isna().all(axis=None)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"consequence": "stop_gained"},
+        {"consequence": "ambiguous"},
+        {"consequence": None},
+        {"cadd_phred": None},
+        {"esm1b": 1.5},
+        {"phylop_470way": np.inf},
+    ],
+)
+def test_v3_rejects_out_of_scope_or_invalid(overrides):
+    with pytest.raises(ValidationError):
+        make_features(v3_row(**overrides))
+
+
+def test_v3_manual_input_without_consequence_column_is_scored():
+    assert len(make_features(v3_row().drop(columns="consequence"))) == 1
+
+
+def test_v3_annotation_fields_and_consequence():
+    payload = {
+        "_id": "chr1:g.1A>G",
+        "dbnsfp": {
+            "cadd": {"phred": 25},
+            "phylop": {"100way_vertebrate": {"score": 2}, "470way_mammalian": {"score": [3, 4]}},
+            "esm1b": {"rankscore": 0.9},
+            "alphamissense": {"rankscore": 0.8, "score": [0.7, 0.9]},
+            "aa": [{"ref": "R", "alt": "W"}, {"ref": ["R"], "alt": ["W"]}],
+        },
+    }
+    result = parse_annotation(payload)
+    assert result.consequence == "missense"
+    assert result.esm1b == 0.9 and result.alphamissense == 0.8
+    assert result.phylop_470way is None  # distinct transcript values are not guessed
+    assert result.sift4g is None
+
+
+@pytest.mark.parametrize(
+    "aa,expected",
+    [
+        ({"ref": "Q", "alt": "X"}, "stop_gained"),
+        ([{"ref": "Q", "alt": "X"}, {"ref": "R", "alt": "W"}], "ambiguous"),
+        ({"ref": "X", "alt": "R"}, "stop_lost"),
+        ({"ref": "L", "alt": "L"}, "synonymous"),
+        (None, None),
+    ],
+)
+def test_v3_consequence_policy(aa, expected):
+    payload = {"_id": "chr1:g.1A>G", "dbnsfp": {"cadd": {"phred": 25}, "aa": aa}}
+    assert parse_annotation(payload).consequence == expected
